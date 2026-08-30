@@ -180,7 +180,9 @@ def fetch_establishments(departement_code: str, min_year: int, max_year: int) ->
         all_results.extend(results)
 
         for r in results:
-            nomenclature = (r.get("uniteLegale") or {}).get("nomenclatureActivitePrincipaleUniteLegale")
+            nomenclature = r.get("nomenclatureActivitePrincipaleEtablissement") or (
+                r.get("uniteLegale") or {}
+            ).get("nomenclatureActivitePrincipaleUniteLegale")
             if nomenclature:
                 seen_nomenclatures.add(nomenclature)
 
@@ -219,11 +221,20 @@ def extract_row(record: dict) -> dict | None:
     except (ValueError, TypeError):
         return None
 
-    naf_code = record.get("activitePrincipaleEtablissement")
+    unite_legale = record.get("uniteLegale") or {}
+
+    # Confirmed against a live response (2026-08-30): the établissement-level
+    # activitePrincipaleEtablissement field was not visible in our sample
+    # (JSON was truncated before we could confirm it either way), but
+    # uniteLegale.activitePrincipaleUniteLegale + nomenclatureActivitePrincipaleUniteLegale
+    # were directly confirmed present. Prefer the établissement-level field
+    # when present (it's the more specific one), fall back to the unit-level one.
+    naf_code = record.get("activitePrincipaleEtablissement") or unite_legale.get(
+        "activitePrincipaleUniteLegale"
+    )
     section = naf_code_to_section(naf_code)
     sector = NAF_WZ_SECTION_LABELS.get(section, "Unknown / unclassified")
 
-    unite_legale = record.get("uniteLegale") or {}
     legal_form_code_raw = unite_legale.get("categorieJuridiqueUniteLegale")
 
     return {
