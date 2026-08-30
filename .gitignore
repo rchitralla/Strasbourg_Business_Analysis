@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Raw API pulls — regenerate via the scripts, don't commit large dumps
+data/raw/*
+!data/raw/.gitkeep
+
+# Generated tables/CSVs and charts — regenerate, don't commit
+data/processed/*
+!data/processed/.gitkeep
+outputs/charts/*
+!outputs/charts/.gitkeep
+outputs/tables/*
+!outputs/tables/.gitkeep
+
+# Credentials
+.env
