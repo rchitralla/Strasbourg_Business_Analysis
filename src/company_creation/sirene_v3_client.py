@@ -245,22 +245,96 @@ def extract_row(record: dict) -> dict | None:
     }
 
 
+def build_dataframe(records: list[dict], region_name: str) -> "pd.DataFrame":
+    """
+    Turn raw établissement records into a tidy DataFrame: one row per
+    (year, region, sector, legal_form) with a count column. Same shape
+    as france_creations.py's build_dataframe(), so it plugs into the
+    same CSV/chart pipeline.
+    """
+    import pandas as pd
+    from collections import defaultdict
+
+    counts = defaultdict(int)
+    for record in records:
+        row = extract_row(record)
+        if row is None:
+            continue
+        key = (row["year"], region_name, row["sector"], row["legal_form"])
+        counts[key] += 1
+
+    df = pd.DataFrame(
+        [(y, r, s, lf, n) for (y, r, s, lf), n in counts.items()],
+        columns=["year", "region", "sector", "legal_form", "count"],
+    )
+    return df.sort_values(["year", "region", "sector"]).reset_index(drop=True)
+
+
+def collect_all_departments(min_year: int, max_year: int) -> "pd.DataFrame":
+    """
+    Fetch and tidy creations for every French department in
+    config.regions.FRENCH_DEPARTMENTS, returning one combined DataFrame.
+    Requires set_api_key() to have been called first.
+
+    This is the uncapped replacement for france_creations.collect_all_regions()
+    — expect it to take a while (rate-limited to ~1 request per 2.1s, and
+    each department can be hundreds of pages across an 11-year window).
+    """
+    import pandas as pd
+    from config.regions import FRENCH_DEPARTMENTS
+
+    frames = []
+    for dept in FRENCH_DEPARTMENTS.values():
+        print(f"\nFetching établissements for {dept.name} (dept code {dept.insee_code}), "
+              f"{min_year}-{max_year}...")
+        records = fetch_establishments(dept.insee_code, min_year=min_year, max_year=max_year)
+        print(f"  Total records retrieved: {len(records)}")
+        frames.append(build_dataframe(records, dept.name))
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def run_all(min_year: int = 2015, max_year: int = 2026):
+    """
+    Full pipeline: fetch all 3 departments, save tidy CSV, plot the
+    year x region comparison chart. Call after set_api_key().
+
+        sv3.set_api_key()
+        df = sv3.run_all()
+    """
+    from pathlib import Path
+    from src.common.plotting import grouped_region_bar
+
+    df = collect_all_departments(min_year, max_year)
+    if df.empty:
+        print("No usable data retrieved.")
+        return df
+
+    csv_path = "data/processed/france_creations_sirene_v3_by_year_dept_sector.csv"
+    Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(csv_path, index=False)
+    print(f"\nTidy data saved to: {csv_path}")
+
+    yearly_by_region = df.groupby(["year", "region"])["count"].sum().reset_index()
+    grouped_region_bar(
+        yearly_by_region, value_col="count",
+        title="New Establishment Creations by Year and Department (Sirene v3.11, uncapped)",
+        ylabel="Number of new establishments",
+        output_path="outputs/charts/france_creations_sirene_v3_by_year_region.png",
+    )
+    return df
+
+
 # ---------------------------------------------------------------------------
-# TODO before this fully replaces france_creations.py's fetch_companies():
+# REMAINING OPEN QUESTION before this can answer B17/B18:
 #
-# 1. Run debug_sample() for one department and confirm against the printed
-#    JSON that: the top-level results key really is "etablissements", that
-#    "uniteLegale" nests exactly as assumed, and that
-#    "activitePrincipaleEtablissement" / "dateCreationEtablissement" /
-#    "categorieJuridiqueUniteLegale" are the real field names (v3.11 docs
-#    were not directly viewable from this environment — network access to
-#    api.insee.fr and portail-api.insee.fr is blocked here).
-#
-# 2. Resolve the legal-form / sole-shareholder question (B17/B18): check
-#    whether the live nomenclature reference (portal's "Documentation" tab,
-#    or https://www.insee.fr/fr/information/2028129) still lets you derive
-#    single- vs multi-shareholder status from categorieJuridiqueUniteLegale
-#    post-2020, or whether that needs a different source entirely (e.g.
-#    INPI's Registre National des Entreprises, which does track associate
-#    counts).
+# Resolve the legal-form / sole-shareholder question: check whether the
+# live nomenclature reference (portal's "Documentation" tab, or
+# https://www.insee.fr/fr/information/2028129) still lets you derive
+# single- vs multi-shareholder status from categorieJuridiqueUniteLegale
+# post-2020 (SASU code 5720 was merged into SAS code 5710 that year), or
+# whether that needs a different source entirely (e.g. INPI's Registre
+# National des Entreprises, which does track associate counts). B16
+# (creations by sector) does not depend on this and is ready to run now
+# via run_all().
 # ---------------------------------------------------------------------------
