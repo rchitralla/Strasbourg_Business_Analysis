@@ -28,7 +28,7 @@ def load_all_departments() -> pd.DataFrame:
         if not Path(csv_path).exists():
             print(f"WARNING: {csv_path} not found — run sv3.run_all() first.")
             continue
-        frames.append(pd.read_csv(csv_path))
+        frames.append(pd.read_csv(csv_path, dtype={"legal_form": str}))
     if not frames:
         raise FileNotFoundError("No department CSVs found under data/processed/.")
     return pd.concat(frames, ignore_index=True)
@@ -65,11 +65,24 @@ def b18_multi_partner_share(df: pd.DataFrame) -> pd.DataFrame:
     """
     B18: share of companies created with multiple partners, per
     department per year. Restricted to rows where is_sole_shareholder
-    is confirmed (not NaN/None) — SAS (ambiguous post-2020 merger) and
-    EI/associations (not applicable) are excluded from both numerator
-    and denominator rather than guessed, so this is a share of the
-    CONFIRMED-classifiable subset, not of all creations. Report that
-    caveat alongside the number.
+    is confirmed (not NaN/None).
+
+    IMPORTANT CAVEAT — read before presenting this number: the official
+    INSEE nomenclature has NO code that confidently means "single
+    shareholder." SARL (5499) and SAS (5710) — which together are the
+    large majority of real company creations — are both structurally
+    ambiguous (SARL has no separate EURL code; SAS absorbed the SASU
+    code in 2020) and are EXCLUDED from the classified subset here. The
+    subset that remains (SA, SNC, sociétés civiles, GIE/GEIE, ag.
+    cooperatives, etc.) is composed entirely of legal forms that
+    structurally REQUIRE 2+ members — so this share is mathematically
+    guaranteed to be ~100%, by construction, not because most companies
+    have multiple partners. It answers "what share of the confirmed-
+    multi-owner legal forms are multi-owner" (tautological), NOT "what
+    share of all companies created have multiple partners" (the actual
+    B18 question). Getting a real answer to B18 requires a data source
+    that tracks associate/shareholder counts directly — e.g. INPI's
+    Registre National des Entreprises — not the Sirene legal-form code.
     """
     classified = df[df["is_sole_shareholder"].notna()].copy()
     classified["is_sole_shareholder"] = classified["is_sole_shareholder"].astype(bool)
@@ -106,10 +119,15 @@ def main():
     b18 = b18_multi_partner_share(df)
     b18.to_csv("outputs/tables/b18_multi_partner_share.csv", index=False)
     print(f"B18 saved: outputs/tables/b18_multi_partner_share.csv ({len(b18)} rows)")
-    print("\nB18 caveat: share is computed only over legal forms with a CONFIRMED "
-          "shareholder count (EURL, SARL, SCI) — SAS is excluded as ambiguous "
-          "since the 2020 SASU-code merger, and EI/associations aren't applicable. "
-          "State this scope explicitly wherever B18 is presented.")
+    print("\nB18 CAVEAT — DO NOT present this share as-is: it is computed only over "
+          "legal forms INSEE's nomenclature confirms structurally require 2+ members "
+          "(SA, SNC, sociétés civiles, GIE/GEIE, ag. cooperatives). SARL and SAS — the "
+          "majority of real company creations — are excluded as ambiguous (no EURL/SASU "
+          "split since 2020). Since no code is confidently 'single-shareholder', this "
+          "share is ~100% by construction and does NOT measure the real-world "
+          "multi-partner rate. See b18_multi_partner_share()'s docstring for detail and "
+          "for what a genuine B18 answer would require (e.g. INPI's Registre National "
+          "des Entreprises).")
 
     print("\nB18 summary (last 3 years, all departments):")
     print(b18[b18["year"] >= b18["year"].max() - 2].to_string(index=False))
