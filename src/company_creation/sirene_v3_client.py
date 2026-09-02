@@ -247,33 +247,39 @@ def fetch_establishments(departement_code: str, min_year: int, max_year: int) ->
     return all_results, complete
 
 
-# Confirmed against multiple independent sources (2026-09-02) — see
-# docs/DATA_SOURCES.md for citations. Deliberately partial: only codes
-# confirmed with real evidence are included. Any other code stays
-# unmapped rather than guessed.
-LEGAL_FORM_LABELS = {
-    "1000": "Entrepreneur Individuel (EI)",
-    "5498": "EURL (SARL, single shareholder)",
-    "5499": "Autre SARL (standard, multi-shareholder)",
-    "5710": "SAS (absorbed SASU in 2020 — shareholder count ambiguous)",
-    "6540": "SCI (Société Civile Immobilière — legally requires 2+ shareholders)",
-    "9220": "Association déclarée",
-    "9260": "Association de droit local (Alsace-Moselle)",
-}
+# Loaded from data/manual/insee_categorie_juridique.csv — the OFFICIAL
+# INSEE "catégorie juridique" nomenclature (source file: user-provided
+# cj_septembre_2022.xls, "Dernière mise à jour le 1er septembre 2022"),
+# covering all ~260 Niveau III codes with real French labels.
+#
+# is_sole_shareholder is NOT from that file — INSEE's nomenclature gives
+# labels, not shareholder-count rules. It's derived separately from
+# French company-law structure (see scripts/build_legal_form_mapping.py
+# for the full reasoning per code family): confirmed multi-shareholder
+# for SNC, sociétés en commandite, SA (all sub-forms — no unipersonal SA
+# exists), GIE/GEIE, and every société civile form (SCI/SCP/SCM/etc. —
+# Code civil art. 1832 requires 2+ associates). EI (1000) is marked N/A
+# (not a shareholder société at all). SARL générique (5499) and SAS
+# (5710) are explicitly left ambiguous: there is NO separate EURL code
+# in this nomenclature (an earlier "5498 = EURL" mapping here was wrong
+# — corrected 2026-09-02 — the file has no such code), and SAS absorbed
+# the SASU-specific code in July 2020. Everything else not confidently
+# classifiable is left unmapped (None) rather than guessed.
+def _load_legal_form_reference():
+    import csv as _csv
 
-# is_sole_shareholder per confirmed code. None = ambiguous or not a
-# shareholder-based société at all (EI, associations) — excluded from
-# B18's "share of multi-partner companies" denominator, not counted as
-# either sole or multi. Codes not in this dict are simply unmapped.
-IS_SOLE_SHAREHOLDER_BY_CODE = {
-    "1000": None,   # EI — not a société; not applicable to B18 at all
-    "5498": True,   # EURL
-    "5499": False,  # Autre SARL (excludes EURL, which has its own code)
-    "5710": None,   # SAS — ambiguous since the 2020 SASU merge
-    "6540": False,  # SCI — legally requires 2+ shareholders
-    "9220": None,   # association — not a shareholder société
-    "9260": None,   # association (Alsace-Moselle local law) — not a shareholder société
-}
+    csv_path = Path(__file__).resolve().parents[2] / "data" / "manual" / "insee_categorie_juridique.csv"
+    labels, is_sole = {}, {}
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        for row in _csv.DictReader(f):
+            code = row["code"]
+            labels[code] = row["libelle"]
+            raw = row["is_sole_shareholder"]
+            is_sole[code] = {"True": True, "False": False}.get(raw)  # "" -> None
+    return labels, is_sole
+
+
+LEGAL_FORM_LABELS, IS_SOLE_SHAREHOLDER_BY_CODE = _load_legal_form_reference()
 
 
 def extract_row(record: dict) -> dict | None:
@@ -454,15 +460,27 @@ def run_all(min_year: int = 2015, max_year: int = 2026):
 
 
 # ---------------------------------------------------------------------------
-# REMAINING OPEN QUESTION before this can answer B17/B18:
+# LEGAL-FORM / SOLE-SHAREHOLDER STATUS — RESOLVED (2026-09-02):
 #
-# Resolve the legal-form / sole-shareholder question: check whether the
-# live nomenclature reference (portal's "Documentation" tab, or
-# https://www.insee.fr/fr/information/2028129) still lets you derive
-# single- vs multi-shareholder status from categorieJuridiqueUniteLegale
-# post-2020 (SASU code 5720 was merged into SAS code 5710 that year), or
-# whether that needs a different source entirely (e.g. INPI's Registre
-# National des Entreprises, which does track associate counts). B16
-# (creations by sector) does not depend on this and is ready to run now
-# via run_all().
+# LEGAL_FORM_LABELS and IS_SOLE_SHAREHOLDER_BY_CODE are loaded from the
+# official INSEE "catégorie juridique" nomenclature (data/manual/
+# insee_categorie_juridique.csv, derived from the user-provided official
+# file cj_septembre_2022.xls via scripts/build_legal_form_mapping.py).
+#
+# Structural limits of this source, carried into the CSV's `basis` column
+# and into IS_SOLE_SHAREHOLDER_BY_CODE as None where the answer can't be
+# determined from this field alone:
+#   - SARL générique (5499): the nomenclature has NO separate EURL code
+#     (there never was a "5498" — an earlier version of this module
+#     wrongly invented one from a low-confidence web source; that has
+#     been removed). Single- vs multi-shareholder SARL can't be told
+#     apart via categorieJuridiqueUniteLegale.
+#   - SAS (5710): SASU (formerly 5720) was merged into this code in July
+#     2020, so post-2020 records are similarly ambiguous.
+# Everything else with a confirmed True/False in French company law (SA,
+# SNC, sociétés civiles, GIE/GEIE, agricultural cooperatives, etc. — see
+# build_legal_form_mapping.py's classify() for the full rule set) is
+# marked accordingly. B18 (multi-partner share) is computed only over
+# this confirmed-classifiable subset — see summarize_b16_b17_b18.py.
+# B16 (creations by sector) does not depend on any of this.
 # ---------------------------------------------------------------------------
