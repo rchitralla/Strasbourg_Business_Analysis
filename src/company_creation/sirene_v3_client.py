@@ -25,7 +25,7 @@ germany_registrations.py:
     from src.company_creation import sirene_v3_client as sv3
     sv3.set_api_key()                      # prompts securely
     sample = sv3.debug_sample("67")        # inspect raw response shape FIRST
-    records = sv3.fetch_establishments("67", min_year=2015, max_year=2026)
+    records, complete = sv3.fetch_establishments("67", min_year=2015, max_year=2026)
 
 Run debug_sample() before trusting fetch_establishments()/extract_row() —
 the field names below (etablissements, uniteLegale, categorieJuridique...)
@@ -81,8 +81,31 @@ BASE_URL = "https://api.insee.fr/api-sirene/3.11"
 SEARCH_ENDPOINT = f"{BASE_URL}/siret"
 PAGE_SIZE = 1000                 # max allowed by the API
 SECONDS_BETWEEN_REQUESTS = 2.1   # stays under the 30 req/min public-plan limit
+MAX_RETRIES = 5                  # for transient network errors (DNS blips, timeouts)
+RETRY_BACKOFF_SECONDS = 5        # multiplied by attempt number
 
 _API_KEY = None
+
+
+def _get_with_retry(url, params, headers, timeout):
+    """
+    Wraps requests.get() with retries for transient network errors
+    (DNS resolution blips, timeouts, connection resets) — a long
+    cursor-pagination run (potentially hundreds of requests over 15-30+
+    minutes) will otherwise die on a single momentary network hiccup
+    and lose everything fetched so far.
+    """
+    last_exc = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return requests.get(url, params=params, headers=headers, timeout=timeout)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_exc = e
+            wait = RETRY_BACKOFF_SECONDS * attempt
+            print(f"  Network error ({e.__class__.__name__}), retrying in {wait}s "
+                  f"(attempt {attempt}/{MAX_RETRIES})...")
+            time.sleep(wait)
+    raise last_exc
 
 
 def set_api_key(key: str = None):
@@ -150,11 +173,16 @@ def debug_sample(departement_code: str, n: int = 5):
     return payload
 
 
-def fetch_establishments(departement_code: str, min_year: int, max_year: int) -> list[dict]:
+def fetch_establishments(departement_code: str, min_year: int, max_year: int) -> tuple[list[dict], bool]:
     """
     Fetch every "établissement" created in a department within
     [min_year, max_year], walking the cursor until exhausted. No
     10,000-result ceiling (unlike the recherche-entreprises wrapper).
+
+    Returns (records, complete). complete is False if the fetch had to
+    give up early (network failure after retries, or a non-200
+    response) — callers MUST check this before treating the result as
+    a full, cacheable dataset for this department.
     """
     query = (
         f"codeCommuneEtablissement:{departement_code}* "
@@ -164,10 +192,18 @@ def fetch_establishments(departement_code: str, min_year: int, max_year: int) ->
     all_results = []
     curseur = "*"
     seen_nomenclatures = set()
+    complete = False
 
     while True:
         params = {"q": query, "curseur": curseur, "nombre": PAGE_SIZE}
-        response = requests.get(SEARCH_ENDPOINT, params=params, headers=_headers(), timeout=60)
+        try:
+            response = _get_with_retry(SEARCH_ENDPOINT, params, _headers(), timeout=60)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            print(f"\nGiving up on department {departement_code} after {MAX_RETRIES} retries "
+                  f"({e.__class__.__name__}). Returning the {len(all_results)} records "
+                  f"already fetched for this department so far — nothing is lost, but "
+                  f"this department's data is INCOMPLETE (cursor was mid-pagination).")
+            break
 
         if response.status_code != 200:
             print(f"Request failed: HTTP {response.status_code}")
@@ -192,6 +228,7 @@ def fetch_establishments(departement_code: str, min_year: int, max_year: int) ->
 
         next_curseur = header.get("curseurSuivant")
         if not results or not next_curseur or next_curseur == curseur:
+            complete = True
             break
         curseur = next_curseur
         time.sleep(SECONDS_BETWEEN_REQUESTS)
@@ -203,7 +240,7 @@ def fetch_establishments(departement_code: str, min_year: int, max_year: int) ->
               "does not apply to these records — see the NAF2025 transition note in "
               "this module's docstring. Sector labels for these records will be wrong.")
 
-    return all_results
+    return all_results, complete
 
 
 def extract_row(record: dict) -> dict | None:
@@ -270,7 +307,11 @@ def build_dataframe(records: list[dict], region_name: str) -> "pd.DataFrame":
     return df.sort_values(["year", "region", "sector"]).reset_index(drop=True)
 
 
-def collect_all_departments(min_year: int, max_year: int) -> "pd.DataFrame":
+def _department_csv_path(dept_code: str) -> str:
+    return f"data/processed/france_creations_sirene_v3_dept_{dept_code}.csv"
+
+
+def collect_all_departments(min_year: int, max_year: int, resume: bool = True) -> "pd.DataFrame":
     """
     Fetch and tidy creations for every French department in
     config.regions.FRENCH_DEPARTMENTS, returning one combined DataFrame.
@@ -279,17 +320,43 @@ def collect_all_departments(min_year: int, max_year: int) -> "pd.DataFrame":
     This is the uncapped replacement for france_creations.collect_all_regions()
     — expect it to take a while (rate-limited to ~1 request per 2.1s, and
     each department can be hundreds of pages across an 11-year window).
+
+    Each department's tidy result is saved to its own CSV
+    (data/processed/france_creations_sirene_v3_dept_<code>.csv) AS SOON AS
+    IT FINISHES, not just at the very end — so a crash partway through
+    department 2 of 3 doesn't lose department 1's already-fetched data.
+    If resume=True (default) and a department's CSV already exists from
+    a previous run, it's loaded from disk instead of re-fetched — re-run
+    this after any failure and it'll pick up where it left off.
     """
     import pandas as pd
+    from pathlib import Path
     from config.regions import FRENCH_DEPARTMENTS
 
+    Path("data/processed").mkdir(parents=True, exist_ok=True)
     frames = []
     for dept in FRENCH_DEPARTMENTS.values():
+        csv_path = _department_csv_path(dept.insee_code)
+        if resume and Path(csv_path).exists():
+            print(f"\n{dept.name} (dept code {dept.insee_code}): already fetched, "
+                  f"loading from {csv_path} (pass resume=False to re-fetch).")
+            frames.append(pd.read_csv(csv_path))
+            continue
+
         print(f"\nFetching établissements for {dept.name} (dept code {dept.insee_code}), "
               f"{min_year}-{max_year}...")
-        records = fetch_establishments(dept.insee_code, min_year=min_year, max_year=max_year)
-        print(f"  Total records retrieved: {len(records)}")
-        frames.append(build_dataframe(records, dept.name))
+        records, complete = fetch_establishments(dept.insee_code, min_year=min_year, max_year=max_year)
+        print(f"  Total records retrieved: {len(records)} (complete: {complete})")
+        dept_df = build_dataframe(records, dept.name)
+
+        if complete:
+            dept_df.to_csv(csv_path, index=False)
+            print(f"  Saved: {csv_path}")
+        else:
+            print(f"  NOT caching — this department's fetch was incomplete. "
+                  f"Re-run collect_all_departments()/run_all() to retry it "
+                  f"(completed departments will be loaded from cache, not re-fetched).")
+        frames.append(dept_df)
 
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
