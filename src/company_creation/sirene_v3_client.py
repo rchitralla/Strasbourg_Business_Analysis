@@ -53,15 +53,17 @@ TWO THINGS CONFIRMED WHILE BUILDING THIS THAT AREN'T FULLY RESOLVED YET:
    mis-mapping a NAF2025 code through the NAF Rev.2 table.
 
 2. Legal-form / sole-shareholder classification (needed for B17/B18) is
-   INTENTIONALLY NOT implemented here. `categorieJuridiqueUniteLegale`
-   is a numeric code, and INSEE merged the SASU-specific code (5720)
-   into the ordinary SAS code (5710) in July 2020 — meaning
-   single-shareholder SAS companies may no longer be distinguishable
-   from multi-shareholder ones via this field alone. It's unconfirmed
-   whether EURL/SARL suffered the same merge. extract_row() passes
-   through the raw code UNMAPPED rather than guessing. Do not build
-   B17/B18 answers on this until that's resolved — see the module-level
-   TODO at the bottom.
+   PARTIALLY resolved — see LEGAL_FORM_LABELS / IS_SOLE_SHAREHOLDER_BY_CODE
+   below, confirmed against multiple independent sources 2026-09-02 (see
+   docs/DATA_SOURCES.md for citations): 1000=EI, 5498=EURL (sole),
+   5499=Autre SARL (multi — EURL has its own code so this one doesn't),
+   6540=SCI (multi — legally requires 2+ shareholders), 9220/9260=
+   associations (not a shareholder société at all). 5710 (SAS) stays
+   explicitly ambiguous — INSEE merged the SASU-specific code (5720)
+   into it in July 2020, so single- vs multi-shareholder SAS can't be
+   told apart via this field. Any code NOT in these two dicts is simply
+   unmapped (None), not "no" — the ~100-code INSEE nomenclature is far
+   from fully covered yet.
 
 Requirements:
     pip install requests pandas
@@ -245,12 +247,48 @@ def fetch_establishments(departement_code: str, min_year: int, max_year: int) ->
     return all_results, complete
 
 
+# Confirmed against multiple independent sources (2026-09-02) — see
+# docs/DATA_SOURCES.md for citations. Deliberately partial: only codes
+# confirmed with real evidence are included. Any other code stays
+# unmapped rather than guessed.
+LEGAL_FORM_LABELS = {
+    "1000": "Entrepreneur Individuel (EI)",
+    "5498": "EURL (SARL, single shareholder)",
+    "5499": "Autre SARL (standard, multi-shareholder)",
+    "5710": "SAS (absorbed SASU in 2020 — shareholder count ambiguous)",
+    "6540": "SCI (Société Civile Immobilière — legally requires 2+ shareholders)",
+    "9220": "Association déclarée",
+    "9260": "Association de droit local (Alsace-Moselle)",
+}
+
+# is_sole_shareholder per confirmed code. None = ambiguous or not a
+# shareholder-based société at all (EI, associations) — excluded from
+# B18's "share of multi-partner companies" denominator, not counted as
+# either sole or multi. Codes not in this dict are simply unmapped.
+IS_SOLE_SHAREHOLDER_BY_CODE = {
+    "1000": None,   # EI — not a société; not applicable to B18 at all
+    "5498": True,   # EURL
+    "5499": False,  # Autre SARL (excludes EURL, which has its own code)
+    "5710": None,   # SAS — ambiguous since the 2020 SASU merge
+    "6540": False,  # SCI — legally requires 2+ shareholders
+    "9220": None,   # association — not a shareholder société
+    "9260": None,   # association (Alsace-Moselle local law) — not a shareholder société
+}
+
+
 def extract_row(record: dict) -> dict | None:
     """
-    Pull creation year and sector from one raw établissement record.
+    Pull creation year, sector, and legal form from one raw établissement
+    record.
 
-    legal_form_code_raw is passed through UNMAPPED (see module docstring,
-    item 2) — do not use it as-is for B17/B18 sole-shareholder analysis.
+    legal_form is the raw numeric categorieJuridiqueUniteLegale code as a
+    string. is_sole_shareholder is populated ONLY for the confirmed subset
+    in IS_SOLE_SHAREHOLDER_BY_CODE (see docs/DATA_SOURCES.md for sources);
+    every other code — the large majority of the ~100-code INSEE
+    nomenclature — stays None (unmapped, not "no"). B16 (creations by
+    sector) should generally EXCLUDE legal_form == "1000" (EI) if the
+    intent is "sociétés" specifically, per how B16 vs B17 are phrased as
+    separate questions in the Data Room brief.
     """
     date_creation = record.get("dateCreationEtablissement")
     if not date_creation:
@@ -289,12 +327,14 @@ def extract_row(record: dict) -> dict | None:
         sector = f"Unknown / unclassified ({nomenclature or 'no nomenclature'})"
 
     legal_form_code_raw = unite_legale.get("categorieJuridiqueUniteLegale")
+    legal_form = str(legal_form_code_raw) if legal_form_code_raw else "?"
 
     return {
         "year": year,
         "sector": sector,
-        "legal_form": str(legal_form_code_raw) if legal_form_code_raw else "?",
-        "is_sole_shareholder": None,  # UNRESOLVED — see module docstring item 2
+        "legal_form": legal_form,
+        "legal_form_label": LEGAL_FORM_LABELS.get(legal_form),  # None if unmapped
+        "is_sole_shareholder": IS_SOLE_SHAREHOLDER_BY_CODE.get(legal_form),
     }
 
 
@@ -320,6 +360,11 @@ def build_dataframe(records: list[dict], region_name: str) -> "pd.DataFrame":
         [(y, r, s, lf, n) for (y, r, s, lf), n in counts.items()],
         columns=["year", "region", "sector", "legal_form", "count"],
     )
+    # Derived purely from legal_form (see LEGAL_FORM_LABELS /
+    # IS_SOLE_SHAREHOLDER_BY_CODE) — added as columns rather than folded
+    # into the groupby key above, since they're deterministic lookups.
+    df["legal_form_label"] = df["legal_form"].map(LEGAL_FORM_LABELS)
+    df["is_sole_shareholder"] = df["legal_form"].map(IS_SOLE_SHAREHOLDER_BY_CODE)
     return df.sort_values(["year", "region", "sector"]).reset_index(drop=True)
 
 
