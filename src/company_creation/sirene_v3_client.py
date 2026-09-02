@@ -235,10 +235,12 @@ def fetch_establishments(departement_code: str, min_year: int, max_year: int) ->
 
     unexpected = seen_nomenclatures - {"NAFRev2"}
     if unexpected:
-        print(f"\nWARNING: unexpected NAF nomenclature(s) seen: {unexpected}. "
-              "The NAF Rev.2 section mapping in this module (NAF_SECTION_BY_CODE_PREFIX) "
-              "does not apply to these records — see the NAF2025 transition note in "
-              "this module's docstring. Sector labels for these records will be wrong.")
+        print(f"\nNOTE: {unexpected} nomenclature(s) also seen alongside NAFRev2 "
+              "(expected for legal units old enough to predate the 2008 NAF change). "
+              "extract_row() buckets those into an explicit "
+              "'Unknown / unclassified (<nomenclature>)' sector rather than "
+              "guessing via the NAFRev2 table — check how big that bucket is "
+              "before treating the sector breakdown as complete.")
 
     return all_results, complete
 
@@ -269,8 +271,22 @@ def extract_row(record: dict) -> dict | None:
     naf_code = record.get("activitePrincipaleEtablissement") or unite_legale.get(
         "activitePrincipaleUniteLegale"
     )
-    section = naf_code_to_section(naf_code)
-    sector = NAF_WZ_SECTION_LABELS.get(section, "Unknown / unclassified")
+    nomenclature = record.get("nomenclatureActivitePrincipaleEtablissement") or unite_legale.get(
+        "nomenclatureActivitePrincipaleUniteLegale"
+    )
+
+    # NAF_SECTION_BY_CODE_PREFIX is built for NAFRev2's code ranges only.
+    # Some legal units (old enough to predate the 2008 nomenclature change,
+    # and never reclassified since — even though they opened a NEW
+    # établissement inside our date window) still carry a NAFRev1 code, and
+    # from Jan 2027 some will carry NAF25. Applying the NAFRev2 table to
+    # either would silently produce a wrong section letter, so those get an
+    # explicit, honest "unclassified" bucket instead of a guessed one.
+    if nomenclature == "NAFRev2":
+        section = naf_code_to_section(naf_code)
+        sector = NAF_WZ_SECTION_LABELS.get(section, "Unknown / unclassified")
+    else:
+        sector = f"Unknown / unclassified ({nomenclature or 'no nomenclature'})"
 
     legal_form_code_raw = unite_legale.get("categorieJuridiqueUniteLegale")
 
