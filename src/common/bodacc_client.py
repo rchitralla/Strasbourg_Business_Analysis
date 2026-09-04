@@ -44,15 +44,62 @@ CONFIRMED against a live response (2026-09-04, via scripts/bodacc_debug_sample.p
     "Dépôts des comptes"                        - annual account filings (dominates raw volume)
     "Procédures collectives"                    - insolvency proceedings (B9) - jugement field populated, see below
     "Procédures de conciliation"                - pre-insolvency conciliation (softer than "collectives")
-    "Modifications diverses"                    - company modifications - likely includes mergers/TUP (B13), NOT YET inspected
+    "Modifications diverses"                    - broad catch-all for company changes (capital increase/decrease, legal-
+                                                    form transformation, management changes, etc.) - see schema below.
+                                                    NOT confirmed to include mergers/TUP specifically yet - both live
+                                                    examples seen were capital changes, not a fusion. If a merger notice
+                                                    exists in this dataset it's most likely findable via a substring
+                                                    search on modificationsgenerales's descriptif text (e.g. containing
+                                                    "fusion") - NOT YET TESTED, see scripts/bodacc_debug_mergers.py.
     "Radiations"                                 - deregistrations/strike-offs
     "Procédures de rétablissement professionnel" - simplified no-asset liquidation (very small businesses)
-    "Créations"                                  - NEW COMPANY INCORPORATIONS - may carry share capital (relevant to the
-                                                    avg-share-capital question) - NOT YET inspected
+    "Créations"                                  - NEW COMPANY INCORPORATIONS - CONFIRMED to carry share capital at
+                                                    formation (listepersonnes.personne.capital.montantCapital) - see
+                                                    schema below. This is THE source for the avg-share-capital question.
     "Immatriculations"                           - registrations, possibly distinct from "Créations" - NOT YET inspected
-    "Ventes et cessions"                         - business/fonds-de-commerce sales - the acquisitions (B14) / LBO-proxy
-                                                    signal - NOT YET inspected
+    "Ventes et cessions"                         - CONFIRMED: fonds-de-commerce (business/goodwill) SALES, not share/
+                                                    equity deals. A real transaction signal (buyer via listepersonnes,
+                                                    seller via listeprecedentproprietaire, sometimes a price embedded as
+                                                    free text in listeetablissements.etablissement.origineFonds, e.g.
+                                                    "...prix stipulé de 40.000,00 EUR") but do NOT conflate this with
+                                                    M&A/LBO share acquisitions — a fonds-de-commerce sale is an asset
+                                                    deal, legally and economically distinct from buying a company's
+                                                    equity. Useful as one input to the LBO-holding-company proxy, not
+                                                    as a direct answer to "how many acquisitions" (B14).
     "Annonces diverses"                          - miscellaneous catch-all
+
+  "Créations" (new incorporation) schema — CONFIRMED via two real
+  examples:
+    listepersonnes (JSON string) = {"personne": {"capital":
+      {"montantCapital": <STRING, e.g. "3600" or "40000.00" - no
+      currency formatting, parse as float>, "devise": "EUR"},
+      "typePersonne": "pm", "denomination": ..., "formeJuridique": ...,
+      "numeroImmatriculation": {...}, "adresseSiegeSocial": {...},
+      "administration": <free text naming gérant/président/etc.>}}.
+      NOTE: "capital" was present on both live examples but is likely
+      absent for legal forms without share capital (EI, associations) -
+      handle a missing capital key as "not applicable", not zero.
+    acte (JSON string) = {"creation": {"categorieCreation": <free text,
+      e.g. "Immatriculation d'une personne morale (B, C, D) suite à
+      création d'un établissement principal">}, "dateImmatriculation":
+      <ISO date>, "dateCommencementActivite": <ISO date>}
+    listeetablissements (JSON string) = {"etablissement": {"activite":
+      <FREE-TEXT sector description, not a NAF code>, "adresse": {...},
+      "qualiteEtablissement": ..., "origineFonds": ...}}
+
+  "Ventes et cessions" (fonds-de-commerce sale) schema — CONFIRMED via
+  two real examples:
+    acte (JSON string) = {"vente": {"categorieVente": <free text, e.g.
+      "Achat d'un fonds par une personne morale (insertion
+      provisoire)">, "dateEffet": <FRENCH TEXT date>, "publiciteLegale":
+      {...}, "opposition": <free text>}, "dateImmatriculation": ...,
+      "dateCommencementActivite": ...}
+    listeetablissements.etablissement.origineFonds sometimes embeds the
+      sale price as free text (e.g. "...prix stipulé de 40.000,00 EUR")
+      - a regex extraction, not a structured field.
+    listeprecedentproprietaire (JSON string) = the SELLER: {"personne":
+      {"denomination"/"nom"+"prenom", "typePersonne": "pp"/"pm", ...}}
+      — the buyer is in listepersonnes as usual.
 
   "Procédures collectives" (insolvency) schema — CONFIRMED via a real
   example (a "Jugement de conversion en liquidation judiciaire"):
