@@ -9,27 +9,46 @@ filters:
   - src/mna/bodacc_mna.py            (merger notices)
   - src/lbo/lbo_manual.py            (holding-company-formation proxy)
 
-CAVEAT — READ BEFORE TRUSTING FIELD NAMES: network access to
-bodacc-datadila.opendatasoft.com is blocked from this development
-environment, so nothing below has been confirmed against a live
-response (same situation sirene_v3_client.py started in). Only the
-GENERIC pagination mechanics (limit/offset, "results"/"total_count" in
-the JSON envelope) are the well-documented, stable Opendatasoft Explore
-API v2.1 convention and are high-confidence. Anything about the
-DATASET'S OWN fields (familleavis_lib values, how department/geography
-is exposed, the exact nested shape of a merger vs. insolvency notice)
-is NOT yet confirmed. Run scripts/bodacc_debug_sample.py FIRST and send
-the output back before trusting any where-clause built on top of this
-client — that one round-trip is what calibrated sirene_v3_client.py's
-field names correctly last time, and the same approach applies here.
+CONFIRMED against a live response (2026-09-04, via scripts/bodacc_debug_sample.py):
+  - Geography field is `numerodepartement` (a 2-digit string, e.g. "67"),
+    NOT "departement" — that guess 400'd. Companion fields
+    departement_nom_officiel, region_code, region_nom_officiel are also
+    present on every record.
+  - `familleavis` (short code, e.g. "dpc") / `familleavis_lib` (French
+    label, e.g. "Dépôts des comptes") categorize the notice type. A
+    100-record UNFILTERED sample came back 100% "Dépôts des comptes"
+    (annual account filings) — this family dominates raw volume (every
+    company files yearly), so an unfiltered sample is NOT a reliable way
+    to discover the full familleavis_lib taxonomy. Use
+    scripts/bodacc_debug_sample.py's exclusion-based discovery loop
+    instead, or confirm each family name you actually need (merger,
+    insolvency, etc.) with a direct debug_sample() call once you have a
+    candidate string.
+  - Nested detail fields — listepersonnes, jugement, acte,
+    modificationsgenerales, depot, radiationaurcs, listeprecedentexploitant,
+    listeprecedentproprietaire, divers, listeetablissements — are each
+    either null OR a JSON-ENCODED STRING (not a real nested object/dict).
+    E.g. for a "Dépôts des comptes" notice, `depot` looked like
+    '{"dateCloture": "2024-08-31", "typeDepot": "Comptes annuels et
+    rapports", ...}' as a STRING. pd.json_normalize() will NOT parse
+    these — use parse_json_field() below on the specific column(s) a
+    given family populates (which field is populated depends on
+    familleavis: expect `jugement` for insolvency notices, likely
+    `modificationsgenerales` for mergers — NOT YET CONFIRMED against a
+    real example of either, since our only live samples so far are all
+    "Dépôts des comptes").
+  - `registre` is a 2-element list: [siren_no_spaces, siren_with_spaces],
+    e.g. ["752461681", "752 461 681"] — index 0 for a clean SIREN.
+  - `commercant` (company name as a plain string) and `ville` are at the
+    top level.
 
-API basics (this part IS confirmed — standard Opendatasoft v2.1 shape):
+API basics (standard Opendatasoft Explore API v2.1 shape):
   Base URL: https://bodacc-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/annonces-commerciales/records
   Pagination: `limit` (max 100/page) + `offset`. The JSON response has
   "total_count" (matches for the current `where`, without needing to
   fetch them) and "results" (the actual records for this page).
   Filtering: `where` takes ODSQL (Opendatasoft Query Language), e.g.
-  where=departement="67". No API key needed.
+  where=numerodepartement="67". No API key needed.
 
 CACHING: fetch_and_cache() saves matching records to a local JSON file
 the first time and loads from that file on every subsequent call
@@ -60,6 +79,33 @@ SECONDS_BETWEEN_REQUESTS = 0.5
 MAX_RETRIES = 5
 RETRY_BACKOFF_SECONDS = 5
 
+GEOGRAPHY_FIELD = "numerodepartement"  # confirmed 2026-09-04, NOT "departement"
+
+# Fields that come back as a JSON-ENCODED STRING (or null) rather than a
+# real nested object — confirmed for listepersonnes/depot; the others
+# are the same shape by consistent API design but not yet seen non-null.
+JSON_STRING_FIELDS = [
+    "listepersonnes", "listeetablissements", "jugement", "acte",
+    "modificationsgenerales", "radiationaurcs", "depot",
+    "listeprecedentexploitant", "listeprecedentproprietaire", "divers",
+]
+
+
+def parse_json_field(value):
+    """
+    Safely parse one of JSON_STRING_FIELDS's string-encoded values into
+    a real dict/list. Returns None for null/empty/unparseable input
+    rather than raising, since most records leave most of these fields
+    null (only the field(s) relevant to that notice's familleavis are
+    populated).
+    """
+    if not value or (isinstance(value, float) and pd.isna(value)):
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
 
 def _get_with_retry(params: dict, timeout: int = 30):
     last_exc = None
@@ -83,8 +129,8 @@ def debug_sample(where: str = "", n: int = 5) -> dict | None:
     this module or its callers.
 
         from src.common import bodacc_client as bc
-        bc.debug_sample()                          # unfiltered, most recent
-        bc.debug_sample('departement="67"')        # test a geography guess
+        bc.debug_sample()                              # unfiltered, most recent
+        bc.debug_sample('numerodepartement="67"')      # confirmed geography field
     """
     params = {"limit": n}
     if where:
