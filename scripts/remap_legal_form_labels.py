@@ -1,15 +1,21 @@
 """
-Re-derive legal_form_label / is_sole_shareholder on ALREADY-FETCHED
-company-creation CSVs, without re-hitting the Sirene v3.11 API.
+Re-derive legal_form_label / is_sole_shareholder / exclude_from_business_counts
+/ category on ALREADY-FETCHED company-creation CSVs, without re-hitting the
+Sirene v3.11 API.
 
 Why this exists: the raw `legal_form` column (the numeric
 categorieJuridiqueUniteLegale code) was always fetched correctly — only
-the two DERIVED columns (legal_form_label, is_sole_shareholder) depended
-on the old, partly-fabricated LEGAL_FORM_LABELS / IS_SOLE_SHAREHOLDER_BY_CODE
-dicts. Since those dicts are now loaded from the corrected official-source
-CSV (data/manual/insee_categorie_juridique.csv), the two derived columns
-can just be recomputed from the `legal_form` code already on disk — no
-need to re-fetch ~270k+ records per department against a 30-req/min API.
+the DERIVED columns depend on lookup tables that can change over time:
+  - legal_form_label, is_sole_shareholder: from the official nomenclature
+    (data/manual/insee_categorie_juridique.csv)
+  - exclude_from_business_counts, category: from the user's manual
+    business-relevance review (data/manual/legal_form_category_review.csv)
+    — is this legal form actually a "company creation", or something else
+    Sirene also registers (a VAT-only registration, a commune, a trade
+    union, a co-ownership syndicate...)?
+Since all four are pure functions of `legal_form`, they can be
+recomputed from the code already on disk — no need to re-fetch
+~270k+ records per department against a 30-req/min API.
 
 Run this on:
   - each data/processed/france_creations_sirene_v3_dept_<code>.csv
@@ -30,6 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.company_creation.sirene_v3_client import (
     LEGAL_FORM_LABELS,
     IS_SOLE_SHAREHOLDER_BY_CODE,
+    EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE,
+    CATEGORY_BY_CODE,
 )
 
 TARGET_GLOBS = [
@@ -44,30 +52,34 @@ def remap_file(csv_path: str) -> None:
         print(f"  SKIP {csv_path}: no legal_form column")
         return
 
-    before_labels = df.get("legal_form_label")
-    before_sole = df.get("is_sole_shareholder")
+    before = {
+        col: df.get(col)
+        for col in ("legal_form_label", "is_sole_shareholder", "exclude_from_business_counts", "category")
+    }
 
     df["legal_form_label"] = df["legal_form"].map(LEGAL_FORM_LABELS)
     df["is_sole_shareholder"] = df["legal_form"].map(IS_SOLE_SHAREHOLDER_BY_CODE)
+    df["exclude_from_business_counts"] = df["legal_form"].map(EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE).fillna(False)
+    df["category"] = df["legal_form"].map(CATEGORY_BY_CODE).fillna("")
 
     unmapped_codes = sorted(df.loc[df["legal_form_label"].isna(), "legal_form"].unique())
     if unmapped_codes:
         print(f"  WARNING: {len(unmapped_codes)} legal_form code(s) with no label "
               f"in the nomenclature: {unmapped_codes}")
 
-    n_label_changed = (
-        int((before_labels != df["legal_form_label"]).sum())
-        if before_labels is not None else len(df)
-    )
-    n_sole_changed = (
-        int((before_sole.astype(str) != df["is_sole_shareholder"].astype(str)).sum())
-        if before_sole is not None else len(df)
-    )
+    changes = {}
+    for col, before_series in before.items():
+        changes[col] = (
+            int((before_series.astype(str) != df[col].astype(str)).sum())
+            if before_series is not None else len(df)
+        )
 
     df.to_csv(csv_path, index=False)
-    print(f"  Remapped {csv_path}: {len(df)} rows, "
-          f"{n_label_changed} label value(s) changed, "
-          f"{n_sole_changed} is_sole_shareholder value(s) changed.")
+    print(f"  Remapped {csv_path}: {len(df)} rows — "
+          f"{changes['legal_form_label']} label, "
+          f"{changes['is_sole_shareholder']} is_sole_shareholder, "
+          f"{changes['exclude_from_business_counts']} exclude_from_business_counts, "
+          f"{changes['category']} category value(s) changed.")
 
 
 def main():

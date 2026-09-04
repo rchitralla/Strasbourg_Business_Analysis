@@ -34,19 +34,78 @@ def load_all_departments() -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def b16_creations_by_sector(df: pd.DataFrame, exclude_ei: bool = True) -> pd.DataFrame:
+def b16_creations_by_sector(df: pd.DataFrame, exclude_ei: bool = True, exclude_non_business: bool = True) -> pd.DataFrame:
     """
     B16: how many companies by sector were registered, per department,
     per year. exclude_ei=True restricts to "sociétés" (excludes
     legal_form 1000 = Entrepreneur Individuel), matching how B16 and
     B17 are phrased as separate questions in the Data Room brief.
+
+    exclude_non_business=True (default) additionally drops every legal
+    form marked exclude_from_business_counts=True in the manual review
+    (data/manual/legal_form_category_review.csv) — VAT-only registrations,
+    communes/départements/régions, deconcentrated state services, trade
+    unions, co-ownership syndicates, professional orders, etc. These are
+    registered in Sirene but are not "company creations" in the sense the
+    Data Room brief means, and were silently inflating B16 before this
+    filter existed. See creations_by_legal_form_group() below to see the
+    excluded volume broken out by category instead of just discarded.
     """
     data = df[df["legal_form"] != "1000"] if exclude_ei else df
+    if exclude_non_business:
+        if "exclude_from_business_counts" not in data.columns:
+            print("WARNING: exclude_from_business_counts column not found — "
+                  "re-run scripts/remap_legal_form_labels.py to pick up the "
+                  "business-relevance review. B16 below is UNFILTERED for "
+                  "non-business legal forms.")
+        else:
+            data = data[~data["exclude_from_business_counts"].astype(bool)]
     return (
         data.groupby(["year", "region", "sector"])["count"]
         .sum()
         .reset_index()
         .sort_values(["year", "region", "sector"])
+    )
+
+
+def creations_by_legal_form_group(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Groups every row by a single label combining the manual review's
+    category tag and exclusion decision, so the codes filtered out of
+    B16 aren't just discarded — their volume is visible broken out by
+    what they actually are:
+      - "Association", "Syndicat", "État", "État-Privé": the user's
+        category tags, whether or not that code was also excluded
+      - "Excluded - <category>" / "Excluded - other/administrative":
+        codes marked for exclusion in the review, split by whether they
+        also carried a category tag
+      - "Entrepreneur individuel (EI)": legal_form == "1000"
+      - "Société (normal business)": everything else — ordinary company
+        legal forms never in question in the review
+    """
+    if "exclude_from_business_counts" not in df.columns or "category" not in df.columns:
+        raise KeyError(
+            "exclude_from_business_counts/category columns not found — "
+            "re-run scripts/remap_legal_form_labels.py first."
+        )
+
+    def assign_group(row) -> str:
+        category = row["category"] if pd.notna(row["category"]) and row["category"] else ""
+        if bool(row["exclude_from_business_counts"]):
+            return f"Excluded - {category}" if category else "Excluded - other/administrative"
+        if category:
+            return category
+        if row["legal_form"] == "1000":
+            return "Entrepreneur individuel (EI)"
+        return "Société (normal business)"
+
+    data = df.copy()
+    data["group"] = data.apply(assign_group, axis=1)
+    return (
+        data.groupby(["year", "region", "group"])["count"]
+        .sum()
+        .reset_index()
+        .sort_values(["year", "region", "group"])
     )
 
 
@@ -110,7 +169,17 @@ def main():
 
     b16 = b16_creations_by_sector(df)
     b16.to_csv("outputs/tables/b16_creations_by_sector.csv", index=False)
-    print(f"B16 saved: outputs/tables/b16_creations_by_sector.csv ({len(b16)} rows)")
+    print(f"B16 saved: outputs/tables/b16_creations_by_sector.csv ({len(b16)} rows) "
+          f"— non-business legal forms excluded (see legal_form_category_review.csv)")
+
+    if "exclude_from_business_counts" in df.columns:
+        groups = creations_by_legal_form_group(df)
+        groups.to_csv("outputs/tables/b16_legal_form_groups.csv", index=False)
+        print(f"Legal-form group breakdown saved: outputs/tables/b16_legal_form_groups.csv "
+              f"({len(groups)} rows) — shows what was excluded from B16 above, by category")
+        totals_by_group = groups.groupby("group")["count"].sum().sort_values(ascending=False)
+        print("\nTotal creations by group (all years/departments):")
+        print(totals_by_group.to_string())
 
     b17 = b17_sole_proprietorships_by_sector(df)
     b17.to_csv("outputs/tables/b17_sole_proprietorships_by_sector.csv", index=False)

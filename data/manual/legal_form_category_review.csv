@@ -1,0 +1,169 @@
+code,legal_form_label,remove_raw,exclude_from_business_counts,category
+5195,Association coopérative inscrite (droit local Alsace Moselle),,False,Association
+9224,Association d'avocats à responsabilité professionnelle individuelle,,False,Association
+9260,"Association de droit local (Bas-Rhin, Haut-Rhin et Moselle)",,False,Association
+9220,Association déclarée,,False,Association
+9221,Association déclarée d'insertion par l'économique,,False,Association
+9230,"Association déclarée, reconnue d'utilité publique",,False,Association
+7323,Association foncière de remembrement,,False,Association
+7322,Association foncière urbaine,,False,Association
+9222,Association intermédiaire,,False,Association
+7321,Association syndicale autorisée,,False,Syndicat
+9150,Association syndicale libre,,False,Syndicat
+2800,Assujetti unique à la TVA,Y,True,
+8250,Assurance mutuelle agricole,,False,
+7111,Autorité constitutionnelle,Y,True,
+7385,Autre établissement public national administratif à compétence territoriale limitée,N,False,État
+2900,Autre groupement de droit privé non doté de la personnalité morale,,False,
+8490,Autre organisme professionnel,,False,
+6901,Autre personne de droit privé inscrite au registre du commerce et des sociétés,,False,
+7490,Autre personne morale de droit administratif,,False,État
+9900,Autre personne morale de droit privé,,False,État
+5560,Autre SA coopérative à conseil d'administration,,False,
+5660,Autre SA coopérative à directoire,,False,
+5460,Autre SARL coopérative,,False,
+6599,Autre société civile,,False,
+6585,Autre société civile professionnelle,,False,
+5194,Caisse (fédérale) de crédit mutuel,,False,
+6596,Caisse de crédit agricole mutuel,,False,
+7363,Caisse de crédit municipal,,False,
+7361,Centre communal d'action sociale,Y,True,
+8470,Centre technique industriel ou comité professionnel du développement économique,,False,Association
+8310,Comité social économique d’entreprise,,False,Syndicat
+8311,Comité social économique d'établissement,,False,Syndicat
+9240,Congrégation,,False,
+6316,Coopérative d'utilisation de matériel agricole en commun (CUMA),Y,True,
+7220,Département,Y,True,
+1000,Entrepreneur individuel,,False,
+7364,Établissement d'hospitalisation,,False,
+7450,"Etablissement public administratif, cercle et foyer dans les armées",,False,État
+7430,Établissement public des cultes d'Alsace-Lorraine,,False,État
+4140,Établissement public local à caractère industriel ou commercial,,False,État
+7331,Établissement public local d'enseignement,,False,État
+7366,Établissement public local social et médico-social,,False,État
+7389,Établissement public national à caractère administratif,Y,True,État
+4110,Établissement public national à caractère industriel ou commercial doté d'un comptable public,,False,État
+4120,Établissement public national à caractère industriel ou commercial non doté d'un comptable public,,False,État
+7383,Établissement public national à caractère scientifique culturel et professionnel,,False,État
+6598,Exploitation agricole à responsabilité limitée,,False,
+9300,Fondation,,False,
+6220,Groupement d'intérêt économique (GIE),,False,
+9223,Groupement d'employeurs,,False,Syndicat
+9970,Groupement de coopération sanitaire à gestion privée,,False,
+7470,Groupement de coopération sanitaire à gestion publique,,False,
+6534,Groupement foncier agricole,,False,
+6538,Groupement foncier et rural,,False,
+6536,Groupement forestier,,False,
+2120,Indivision avec personne morale,Y,True,
+2110,Indivision entre personnes physiques,Y,True,
+8130,Institution de retraite complémentaire,,False,
+8210,Mutuelle,,False,
+8450,Ordre professionnel ou assimilé,Y,True,
+7381,Organisme consulaire,Y,True,
+7357,Pôle d'équilibre territorial et rural (PETR),,False,
+7378,Régie d'une collectivité locale à caractère administratif,,False,État
+8110,Régime général de la Sécurité Sociale,Y,True,
+8120,Régime spécial de Sécurité Sociale,Y,True,
+7230,Région,Y,True,
+5599,SA à conseil d'administration (s.a.i.),,False,
+5699,SA à directoire (s.a.i.),,False,
+5558,SA coopérative de production  (SCOP) à conseil d'administration,,False,
+5547,SA coopérative de production de HLM à conseil d'administration,,False,
+5530,SA d'aménagement foncier et d'équipement rural (SAFER) à conseil d'administration,Y,True,
+5515,SA d'économie mixte à conseil d'administration,,False,État-Privé
+5615,SA d'économie mixte à directoire,,False,État-Privé
+5546,SA de HLM à conseil d'administration,,False,
+5522,SA immobilière pour le commerce et l'industrie (SICOMI) à conseil d'administration,,False,
+5510,SA nationale à conseil d'administration,,False,
+5453,SARL coopérative artisanale,,False,
+5458,SARL coopérative de production (SCOP),,False,
+5426,SARL immobilière de gestion,,False,
+5410,SARL nationale,,False,
+5710,"SAS, société par actions simplifiée",,False,
+6578,SCP d'architectes,,False,
+6561,SCP d'avocats,,False,
+6564,SCP d'huissiers,,False,
+6573,SCP d'infirmiers,,False,
+6571,SCP de médecins,,False,
+6565,SCP de notaires,,False,
+6576,SCP de vétérinaires,,False,
+7172,Service déconcentré de l'État à compétence (inter) départementale,Y,True,
+7171,Service déconcentré de l'État à compétence (inter) régionale,Y,True,
+5499,Société à responsabilité limitée (sans autre indication),,False,
+6542,Société civile d'attribution,,False,
+6597,Société civile d'exploitation agricole,,False,
+6589,Société civile de moyens,,False,
+6521,Société civile de placement collectif immobilier (SCPI),,False,
+6539,Société civile foncière,,False,
+6540,Société civile immobilière,,False,
+6541,Société civile immobilière de construction-vente,,False,
+3120,Société commerciale étrangère immatriculée au RCS,Y,True,
+6317,Société coopérative agricole,,False,
+5192,Société coopérative de banque populaire,,False,
+2220,Société créée de fait avec personne morale,,False,
+2210,Société créée de fait entre personnes physiques,,False,
+6411,Société d'assurance à forme mutuelle,,False,
+5485,Société d'exercice libéral à responsabilité limitée,,False,
+5385,Société d'exercice libéral en commandite par actions,,False,
+5785,Société d'exercice libéral par action simplifiée,,False,
+5470,Société de Participations Financières de Profession Libérale Société à responsabilité limitée (SPFPL SARL),,False,
+5570,Société de Participations Financières de Profession Libérale Société anonyme à conseil d'administration (SPFPL SA à conseil d'administration),,False,
+5770,Société de Participations Financières de Profession Libérale Société par actions simplifiée (SPFPL SAS),,False,
+5308,Société en commandite par actions,,False,
+5306,Société en commandite simple,,False,
+5202,Société en nom collectif,,False,
+2320,Société en participation avec personne morale,,False,
+2385,Société en participation de professions libérales,,False,
+2310,Société en participation entre personnes physiques,,False,
+3220,Société étrangère non immatriculée au RCS,,False,
+5800,Société européenne,,False,
+6511,Sociétés Interprofessionnelles de Soins Ambulatoires,,False,
+9110,Syndicat de copropriété,Y,True,
+8410,Syndicat de salariés,,False,Syndicat
+7345,Syndicat intercommunal à vocation multiple (SIVOM),,False,Syndicat
+7353,Syndicat intercommunal à vocation unique (SIVU),,False,Syndicat
+7354,Syndicat mixte fermé,,False,Syndicat
+7355,Syndicat mixte ouvert,,False,Syndicat
+8420,Syndicat patronal,,False,Syndicat
+6318,Union de sociétés coopératives agricoles,,False,
+7379,(Autre) Établissement public administratif local,Y,True,
+7179,(Autre) Service déconcentré de l'État à compétence territoriale,Y,True,
+9210,Association non déclarée,,False,Association
+7384,Autre établissement public national d'enseignement,,False,
+6560,Autre société civile coopérative,,False,
+7362,Caisse des écoles,,False,
+8290,Autre organisme mutualiste,,False,
+6595,Caisse locale de crédit mutuel,,False,État
+7367,Centre Intercommunal d'action sociale (CIAS),,False,État
+7373,Établissement public local culturel,,False,État
+7382,Établissement public national ayant fonction d'administration centrale,,False,État
+3210,"État, collectivité ou établissement public étranger",,False,État
+5520,Fonds à forme sociétale à conseil d'administration,,False,État
+6535,Groupement agricole foncier,,False,
+6210,Groupement européen d'intérêt économique (GEIE),,False,
+7351,Institution interdépartementale ou entente,Y,True,
+7344,Métropole,Y,True,
+5553,SA coopérative artisanale à conseil d'administration,,False,
+5551,SA coopérative de consommation à conseil d'administration,,False,
+5532,SA d'intérêt collectif agricole (SICA) à conseil d'administration,,False,
+5610,SA nationale à directoire,,False,
+5442,SARL d'attribution,,False,
+5415,SARL d'économie mixte,,False,État-Privé
+6568,SCP de conseils juridiques,,False,
+6572,SCP de dentistes,,False,
+6577,SCP de géomètres experts,,False,
+6574,SCP de masseurs-kinésithérapeutes,,False,
+7120,Service central d'un ministère,Y,True,
+7160,Service déconcentré à compétence nationale d'un ministère (hors Défense),Y,True,
+7372,Service départemental d'incendie et de secours (SDIS),Y,True,
+6543,Société civile coopérative de construction,,False,
+5585,Société d'exercice libéral à forme anonyme à conseil d'administration,,False,
+5203,Société en nom collectif coopérative,,False,
+3290,Autre personne morale de droit étranger,,False,
+3205,Organisation internationale,,False,
+7340,Pôle métropolitain,Y,True,
+4150,Régie d'une collectivité locale à caractère industriel ou commercial,,False,État
+3110,Représentation ou agence commerciale d'état ou organisme public étranger immatriculé au RCS,,False,
+5543,SA coopérative de construction à conseil d'administration,,False,
+5646,SA de HLM à directoire,,False,
+7150,Service du ministère de la Défense,Y,True,

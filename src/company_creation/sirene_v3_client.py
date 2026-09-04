@@ -283,6 +283,41 @@ def _load_legal_form_reference():
 LEGAL_FORM_LABELS, IS_SOLE_SHAREHOLDER_BY_CODE = _load_legal_form_reference()
 
 
+# Loaded from data/manual/legal_form_category_review.csv — the user's own
+# manual business-relevance review of ~170 "non-obvious" legal-form codes
+# (2026-09-04), built via scripts/build_legal_form_category_review.py.
+# This is a SEPARATE question from is_sole_shareholder above: it's not
+# about French company law, it's about whether a given legal form is
+# actually a "company creation" in the sense the Data Room brief means,
+# or something else Sirene happens to also register (a VAT-only
+# registration, a commune/région, a trade union, a co-ownership
+# syndicate, a deconcentrated state service...).
+#
+# EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE: True only for codes explicitly
+# marked "Y" in the review. Defaults to False for any code not in the
+# review file (including all ordinary company forms, which were never
+# in question).
+#
+# CATEGORY_BY_CODE: a free-text tag (Association / Syndicat / État /
+# État-Privé) for codes the user grouped that way, whether or not they're
+# also excluded. Defaults to "" (uncategorized / ordinary company) for
+# any code not in the review file.
+def _load_category_review():
+    import csv as _csv
+
+    csv_path = Path(__file__).resolve().parents[2] / "data" / "manual" / "legal_form_category_review.csv"
+    exclude, category = {}, {}
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        for row in _csv.DictReader(f):
+            code = row["code"]
+            exclude[code] = row["exclude_from_business_counts"].strip().lower() == "true"
+            category[code] = row["category"]
+    return exclude, category
+
+
+EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE, CATEGORY_BY_CODE = _load_category_review()
+
+
 def extract_row(record: dict) -> dict | None:
     """
     Pull creation year, sector, and legal form from one raw établissement
@@ -342,6 +377,8 @@ def extract_row(record: dict) -> dict | None:
         "legal_form": legal_form,
         "legal_form_label": LEGAL_FORM_LABELS.get(legal_form),  # None if unmapped
         "is_sole_shareholder": IS_SOLE_SHAREHOLDER_BY_CODE.get(legal_form),
+        "exclude_from_business_counts": EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE.get(legal_form, False),
+        "category": CATEGORY_BY_CODE.get(legal_form, ""),
     }
 
 
@@ -368,10 +405,13 @@ def build_dataframe(records: list[dict], region_name: str) -> "pd.DataFrame":
         columns=["year", "region", "sector", "legal_form", "count"],
     )
     # Derived purely from legal_form (see LEGAL_FORM_LABELS /
-    # IS_SOLE_SHAREHOLDER_BY_CODE) — added as columns rather than folded
-    # into the groupby key above, since they're deterministic lookups.
+    # IS_SOLE_SHAREHOLDER_BY_CODE / EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE /
+    # CATEGORY_BY_CODE) — added as columns rather than folded into the
+    # groupby key above, since they're deterministic lookups.
     df["legal_form_label"] = df["legal_form"].map(LEGAL_FORM_LABELS)
     df["is_sole_shareholder"] = df["legal_form"].map(IS_SOLE_SHAREHOLDER_BY_CODE)
+    df["exclude_from_business_counts"] = df["legal_form"].map(EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE).fillna(False)
+    df["category"] = df["legal_form"].map(CATEGORY_BY_CODE).fillna("")
     return df.sort_values(["year", "region", "sector"]).reset_index(drop=True)
 
 
