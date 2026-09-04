@@ -67,8 +67,12 @@ def _classify_nature(nature: str) -> str | None:
     return NATURE_CLASSIFICATION.get(nature)
 
 
-def _department_cache_path(dept_code: str) -> str:
-    return f"data/processed/bodacc_failures_dept_{dept_code}.json"
+def _department_cache_path(dept_code: str, min_year: int, max_year: int) -> str:
+    # Year range is part of the cache key — a cache file for one range
+    # must NEVER be silently reused for a different range (e.g. after
+    # narrowing 2015-2026 down to 2020-2026), or stale/incomplete-looking
+    # data would be returned without a fetch actually happening.
+    return f"data/processed/bodacc_failures_dept_{dept_code}_{min_year}_{max_year}.json"
 
 
 def fetch_failures_for_department(dept_code: str, min_year: int, max_year: int) -> pd.DataFrame:
@@ -85,7 +89,7 @@ def fetch_failures_for_department(dept_code: str, min_year: int, max_year: int) 
     return bc.fetch_and_cache_by_date_range(
         where_base, date_field="dateparution",
         date_start=f"{min_year}-01-01", date_end=f"{max_year}-12-31",
-        cache_path=_department_cache_path(dept_code),
+        cache_path=_department_cache_path(dept_code, min_year, max_year),
     )
 
 

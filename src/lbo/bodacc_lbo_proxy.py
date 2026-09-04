@@ -90,8 +90,10 @@ def _acquisition_signal_score(legal_form_text: str, activite_text: str, commerca
     return score
 
 
-def _department_cache_path(dept_code: str) -> str:
-    return f"data/processed/bodacc_lbo_holdings_dept_{dept_code}.json"
+def _department_cache_path(dept_code: str, min_year: int, max_year: int) -> str:
+    # Year range is part of the cache key — see bodacc_failures.py's
+    # identical comment for why this must never be omitted.
+    return f"data/processed/bodacc_lbo_holdings_dept_{dept_code}_{min_year}_{max_year}.json"
 
 
 def fetch_holding_creations_for_department(dept_code: str, min_year: int, max_year: int) -> pd.DataFrame:
@@ -108,7 +110,7 @@ def fetch_holding_creations_for_department(dept_code: str, min_year: int, max_ye
     return bc.fetch_and_cache_by_date_range(
         where_base, date_field="dateparution",
         date_start=f"{min_year}-01-01", date_end=f"{max_year}-12-31",
-        cache_path=_department_cache_path(dept_code),
+        cache_path=_department_cache_path(dept_code, min_year, max_year),
     )
 
 
