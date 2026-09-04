@@ -1,46 +1,172 @@
 """
-Corporate failures axis (Data Room question B9, second half — failure
-rates "by sector").
+Corporate failures axis (Data Room question B9) — BODACC "Procédures
+collectives" notices, via the shared src/common/bodacc_client.py.
 
-STATUS: not yet implemented. This module is a spec for the next
-contributor (or the next Claude session) to fill in.
+CONFIRMED against a live response (2026-09-04, via
+scripts/bodacc_debug_sample.py): familleavis_lib="Procédures collectives"
+notices carry a `jugement` field (JSON-encoded string) shaped like:
+    {"famille": "Jugement prononçant",
+     "nature": "Jugement de conversion en liquidation judiciaire",
+     "date": "10 décembre 2009",           <- FRENCH TEXT, not ISO
+     "complementJugement": "...",
+     "type": "initial"}
 
-Question this covers:
-  B9 - Corporate failure rates by sector, last 3 years, per department
-       (Bas-Rhin, Haut-Rhin, Moselle) vs national average vs
-       Baden-Württemberg.
+IMPORTANT — read before treating a raw count as "the" failure count:
+jugement.type ("initial") only says whether this BODACC NOTICE is a
+first publication — it does NOT distinguish an opening judgment from a
+later conversion or plan. The Data Room brief's own caveat is explicit:
+"an insolvency = an OPENING JUDGMENT; conversions from reorganisation to
+liquidation and terminated plans are not counted again." So this module
+classifies jugement.nature (free text) into opening vs. conversion/other
+via NATURE_CLASSIFICATION below, and headline counts should use
+is_opening_judgment == True unless you deliberately want the broader
+"all proceeding-related notices" number.
 
-Data sources & approach:
-  - Bodacc (Bulletin officiel des annonces civiles et commerciales)
-    publishes every French insolvency proceeding (redressement
-    judiciaire, liquidation judiciaire) as a structured, free, public
-    dataset via the opendatasoft API:
-    https://bodacc-datadila.opendatasoft.com/api/records/1.0/search/
-    Filter on `familleavis_lib` / `typeavis` for insolvency notices and
-    on the registered office department for geography. This is the
-    same portal src/mna/bodacc_mna.py uses for M&A — consider a shared
-    src/common/bodacc_client.py once both are implemented, to avoid
-    duplicating pagination/rate-limit logic.
-  - INSEE also publishes an annual "défaillances d'entreprises" index
-    (BDM series) at the regional level, useful as a cross-check /
-    trend line even though it isn't department-granular.
-  - Failure *rate* (vs. raw count) needs a denominator: the stock of
-    active companies per department/sector. Pull that from the same
-    Recherche d'Entreprises / Sirene source used in
-    src/company_creation/france_creations.py (active establishment
-    counts), or from INSEE's Sirene "stock" statistics.
-  - Baden-Württemberg equivalent: "Unternehmensinsolvenzen" statistic
-    (EVAS 52411) on regionalstatistik.de, same GENESIS webservice
-    pattern as src/company_creation/germany_registrations.py.
+NATURE_CLASSIFICATION currently covers only the nature strings actually
+seen so far (one example: "Jugement de conversion en liquidation
+judiciaire" -> conversion). MORE VALUES WILL APPEAR once real volume is
+pulled — any unrecognized nature string is classified as None
+(unclassified) with a loud warning printed, never silently guessed, so
+this needs revisiting once real department-level data comes back. This
+is the same defensive-classification pattern used for the Sirene
+NAFRev1/legal-form corrections elsewhere in this project.
 
-TODO:
-  1. Implement a Bodacc client (opendatasoft search API) filtered to
-     insolvency notices, paginated, for the 3 departments + France.
-  2. Aggregate by year x department x NAF section using
-     src/common/sectors.NAF_WZ_SECTION_LABELS for consistent labels.
-  3. Pull the active-company denominator and compute failure rate =
-     failures / active companies, per department x sector x year.
-  4. Implement the Baden-Württemberg EVAS 52411 pull, mirroring
-     germany_registrations.py's fetch_and_parse_table() pattern.
-  5. Plot with src/common/plotting.grouped_region_bar().
+There is NO NAF/sector code on a BODACC record (only a free-text
+"activite" description) — a sector breakdown requires cross-referencing
+extract_siren() against Sirene (src/company_creation/sirene_v3_client.py),
+which is NOT implemented in this module yet (see TODO).
+
+Usage:
+    from src.failures import bodacc_failures as bf
+    df = bf.collect_all_departments(min_year=2015, max_year=2026)
 """
+
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.common import bodacc_client as bc
+from config.regions import FRENCH_DEPARTMENTS
+
+# Only the nature strings actually confirmed against a live response so
+# far. Extend this as new values surface — see the module docstring.
+NATURE_CLASSIFICATION = {
+    "Jugement de conversion en liquidation judiciaire": "conversion",
+    # Expected but NOT YET CONFIRMED against a real example — verify
+    # the exact wording before relying on these:
+    # "Jugement d'ouverture d'une procédure de redressement judiciaire": "opening",
+    # "Jugement d'ouverture d'une procédure de liquidation judiciaire": "opening",
+    # "Jugement arrêtant le plan de redressement": "plan",
+    # "Jugement de clôture pour insuffisance d'actif": "cloture",
+}
+
+
+def _classify_nature(nature: str) -> str | None:
+    return NATURE_CLASSIFICATION.get(nature)
+
+
+def _department_cache_path(dept_code: str) -> str:
+    return f"data/processed/bodacc_failures_dept_{dept_code}.json"
+
+
+def fetch_failures_for_department(dept_code: str, min_year: int, max_year: int) -> pd.DataFrame:
+    """
+    Fetch every "Procédures collectives" notice for one department in
+    [min_year, max_year], cached to disk (see bc.fetch_and_cache) so
+    re-running never re-hits the API for data already fetched.
+    """
+    where = (
+        f'{bc.GEOGRAPHY_FIELD}="{dept_code}" '
+        f'AND familleavis_lib="Procédures collectives" '
+        f'AND dateparution>="{min_year}-01-01" '
+        f'AND dateparution<="{max_year}-12-31"'
+    )
+    return bc.fetch_and_cache(where, _department_cache_path(dept_code))
+
+
+def extract_row(record: dict) -> dict | None:
+    jugement = bc.parse_json_field(record.get("jugement"))
+    if jugement is None:
+        return None
+
+    nature = jugement.get("nature")
+    date_parution = record.get("dateparution")
+    try:
+        year = int(date_parution[:4]) if date_parution else None
+    except (ValueError, TypeError):
+        year = None
+
+    return {
+        "year": year,
+        "department_code": record.get("numerodepartement"),
+        "department_name": record.get("departement_nom_officiel"),
+        "siren": bc.extract_siren(record),
+        "commercant": record.get("commercant"),
+        "ville": record.get("ville"),
+        "nature": nature,
+        "nature_classification": _classify_nature(nature),  # "opening"/"conversion"/... or None if unrecognized
+        "jugement_date_text": jugement.get("date"),  # French text, e.g. "10 décembre 2009" - not parsed to a real date yet
+        "dateparution": date_parution,
+    }
+
+
+def build_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
+    if raw_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for record in raw_df.to_dict("records"):
+        row = extract_row(record)
+        if row is not None:
+            rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    unclassified = sorted(
+        df.loc[df["nature_classification"].isna(), "nature"].dropna().unique()
+    )
+    if unclassified:
+        print(f"WARNING: {len(unclassified)} unrecognized jugement.nature value(s) — "
+              f"add them to NATURE_CLASSIFICATION in bodacc_failures.py before "
+              f"trusting an 'opening judgment' headline count: {unclassified}")
+
+    return df
+
+
+def collect_all_departments(min_year: int, max_year: int) -> pd.DataFrame:
+    """
+    Fetch + tidy failures for every French department in
+    config.regions.FRENCH_DEPARTMENTS, returning one combined DataFrame.
+    Each department's raw fetch is cached independently (see
+    fetch_failures_for_department) — delete
+    data/processed/bodacc_failures_dept_<code>.json to force a refetch.
+    """
+    frames = []
+    for dept in FRENCH_DEPARTMENTS.values():
+        print(f"\nFetching 'Procédures collectives' notices for {dept.name} "
+              f"(dept code {dept.insee_code}), {min_year}-{max_year}...")
+        raw_df = fetch_failures_for_department(dept.insee_code, min_year, max_year)
+        tidy_df = build_dataframe(raw_df)
+        print(f"  {len(tidy_df)} notice(s) extracted.")
+        frames.append(tidy_df)
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+# TODO (not yet implemented):
+#   1. Parse jugement_date_text (French month names, e.g. "10 décembre
+#      2009") into a real date — the notice's dateparution is when
+#      BODACC published it, which can lag the actual judgment date.
+#   2. Sector breakdown: cross-reference extract_siren() against Sirene
+#      (src/company_creation/sirene_v3_client.py) to get a NAF section -
+#      there is no sector code on the BODACC record itself.
+#   3. Failure RATE (vs. raw count) needs the active-company-stock
+#      denominator per department/sector/year - not sourced yet.
+#   4. Expand NATURE_CLASSIFICATION as new jugement.nature values surface
+#      from real department-level data (only one value is confirmed so
+#      far - see module docstring).
+#   5. Baden-Württemberg side: Destatis/regionalstatistik.de
+#      Insolvenzstatistik (EVAS 52411) - a completely separate API, not
+#      BODACC-related. Mirror germany_registrations.py's pattern.

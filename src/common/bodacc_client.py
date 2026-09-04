@@ -28,19 +28,64 @@ CONFIRMED against a live response (2026-09-04, via scripts/bodacc_debug_sample.p
     modificationsgenerales, depot, radiationaurcs, listeprecedentexploitant,
     listeprecedentproprietaire, divers, listeetablissements — are each
     either null OR a JSON-ENCODED STRING (not a real nested object/dict).
-    E.g. for a "Dépôts des comptes" notice, `depot` looked like
-    '{"dateCloture": "2024-08-31", "typeDepot": "Comptes annuels et
-    rapports", ...}' as a STRING. pd.json_normalize() will NOT parse
-    these — use parse_json_field() below on the specific column(s) a
-    given family populates (which field is populated depends on
-    familleavis: expect `jugement` for insolvency notices, likely
-    `modificationsgenerales` for mergers — NOT YET CONFIRMED against a
-    real example of either, since our only live samples so far are all
-    "Dépôts des comptes").
-  - `registre` is a 2-element list: [siren_no_spaces, siren_with_spaces],
-    e.g. ["752461681", "752 461 681"] — index 0 for a clean SIREN.
+    pd.json_normalize() will NOT parse these — use parse_json_field()
+    below on the specific column(s) a given family populates.
+  - `registre` is a 2-element list holding the SAME SIREN in both a
+    spaced and unspaced format, but THE ORDER IS NOT CONSISTENT between
+    records — one example had ["752461681", "752 461 833"] (unspaced
+    first), another had ["482 309 382", "482309382"] (spaced first). Use
+    extract_siren() below (strips non-digits from either element) rather
+    than assuming a fixed index.
   - `commercant` (company name as a plain string) and `ville` are at the
-    top level.
+    top level on every record.
+
+  Family taxonomy (familleavis_lib) confirmed via the exclusion-loop
+  discovery in scripts/bodacc_debug_sample.py — 10 families found:
+    "Dépôts des comptes"                        - annual account filings (dominates raw volume)
+    "Procédures collectives"                    - insolvency proceedings (B9) - jugement field populated, see below
+    "Procédures de conciliation"                - pre-insolvency conciliation (softer than "collectives")
+    "Modifications diverses"                    - company modifications - likely includes mergers/TUP (B13), NOT YET inspected
+    "Radiations"                                 - deregistrations/strike-offs
+    "Procédures de rétablissement professionnel" - simplified no-asset liquidation (very small businesses)
+    "Créations"                                  - NEW COMPANY INCORPORATIONS - may carry share capital (relevant to the
+                                                    avg-share-capital question) - NOT YET inspected
+    "Immatriculations"                           - registrations, possibly distinct from "Créations" - NOT YET inspected
+    "Ventes et cessions"                         - business/fonds-de-commerce sales - the acquisitions (B14) / LBO-proxy
+                                                    signal - NOT YET inspected
+    "Annonces diverses"                          - miscellaneous catch-all
+
+  "Procédures collectives" (insolvency) schema — CONFIRMED via a real
+  example (a "Jugement de conversion en liquidation judiciaire"):
+    jugement (JSON string) = {"famille": "Jugement prononçant",
+      "nature": <free-text judgment type, e.g. "Jugement de conversion
+      en liquidation judiciaire">, "date": <FRENCH TEXT date, e.g.
+      "10 décembre 2009" - NOT ISO format, needs French month-name
+      parsing>, "complementJugement": <free text, often names the
+      liquidator>, "type": "initial"}. NOTE: jugement.type ("initial")
+      describes whether THIS BODACC NOTICE is a first publication (same
+      axis as the outer typeavis_lib="Avis initial") — it does NOT tell
+      you whether the underlying judgment itself is an opening
+      proceeding vs. a later conversion/plan/clôture. That distinction
+      is only in jugement.nature's free text, and only ONE example
+      ("conversion en liquidation judiciaire") has been seen so far —
+      the Data Room brief's own caveat ("an insolvency = an opening
+      judgment; conversions... are not counted again") means
+      bodacc_failures.py MUST classify jugement.nature (opening vs.
+      conversion vs. plan vs. clôture) rather than counting every
+      "Procédures collectives" row as a fresh failure. Expect more
+      nature values to surface once real data is pulled at volume —
+      classify defensively (a known-values dict + a loud warning for
+      anything unrecognized), same pattern used for the Sirene
+      NAFRev1/legal-form fixes elsewhere in this project.
+    listepersonnes (JSON string) = {"personne": {"typePersonne": "pp" or
+      "pm", "numeroImmatriculation": {"numeroIdentification": <SIREN,
+      spaced>, ...}, "activite": <FREE-TEXT activity description, NOT a
+      NAF code>, plus "nom"/"prenom" for a "pp" (personne physique) or
+      "denomination"/"formeJuridique" for a "pm" (personne morale)}}.
+      There is NO NAF/sector code anywhere on a BODACC record — sector
+      breakdown requires cross-referencing extract_siren(record) against
+      Sirene (src/company_creation/sirene_v3_client.py), not the free-
+      text "activite" field.
 
 API basics (standard Opendatasoft Explore API v2.1 shape):
   Base URL: https://bodacc-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/annonces-commerciales/records
@@ -89,6 +134,24 @@ JSON_STRING_FIELDS = [
     "modificationsgenerales", "radiationaurcs", "depot",
     "listeprecedentexploitant", "listeprecedentproprietaire", "divers",
 ]
+
+
+def extract_siren(record: dict) -> str | None:
+    """
+    Pull a clean 9-digit SIREN out of a record's `registre` field. The
+    field holds the same SIREN twice (spaced and unspaced) but the
+    ORDER IS NOT CONSISTENT between records (confirmed via two live
+    examples with opposite ordering) — strip non-digits instead of
+    trusting a fixed index.
+    """
+    registre = record.get("registre")
+    if not registre:
+        return None
+    for value in registre:
+        digits = "".join(c for c in str(value) if c.isdigit())
+        if len(digits) == 9:
+            return digits
+    return None
 
 
 def parse_json_field(value):
