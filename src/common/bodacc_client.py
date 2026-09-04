@@ -173,6 +173,20 @@ RETRY_BACKOFF_SECONDS = 5
 
 GEOGRAPHY_FIELD = "numerodepartement"  # confirmed 2026-09-04, NOT "departement"
 
+# Confirmed 2026-09-04 (scripts/bodacc_debug_mergers.py): merger/TUP
+# notices live inside "Modifications diverses" with a short descriptif
+# like "fusion" - ODSQL `like` substring-matches modificationsgenerales
+# directly even though it's stored as escaped JSON. 15,541 national
+# matches for "fusion" alone; "absorption"/"TUP" may overlap with it on
+# the same record (a merger notice can mention more than one term), so
+# OR them in one query rather than summing separate counts.
+MERGER_WHERE_CLAUSE = (
+    'familleavis_lib="Modifications diverses" AND '
+    '(modificationsgenerales like "%fusion%" OR '
+    'modificationsgenerales like "%absorption%" OR '
+    'modificationsgenerales like "%TUP%")'
+)
+
 # Fields that come back as a JSON-ENCODED STRING (or null) rather than a
 # real nested object — confirmed for listepersonnes/depot; the others
 # are the same shape by consistent API design but not yet seen non-null.
