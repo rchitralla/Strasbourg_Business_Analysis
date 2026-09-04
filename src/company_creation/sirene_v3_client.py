@@ -53,17 +53,18 @@ TWO THINGS CONFIRMED WHILE BUILDING THIS THAT AREN'T FULLY RESOLVED YET:
    mis-mapping a NAF2025 code through the NAF Rev.2 table.
 
 2. Legal-form / sole-shareholder classification (needed for B17/B18) is
-   PARTIALLY resolved — see LEGAL_FORM_LABELS / IS_SOLE_SHAREHOLDER_BY_CODE
-   below, confirmed against multiple independent sources 2026-09-02 (see
-   docs/DATA_SOURCES.md for citations): 1000=EI, 5498=EURL (sole),
-   5499=Autre SARL (multi — EURL has its own code so this one doesn't),
-   6540=SCI (multi — legally requires 2+ shareholders), 9220/9260=
-   associations (not a shareholder société at all). 5710 (SAS) stays
-   explicitly ambiguous — INSEE merged the SASU-specific code (5720)
-   into it in July 2020, so single- vs multi-shareholder SAS can't be
-   told apart via this field. Any code NOT in these two dicts is simply
-   unmapped (None), not "no" — the ~100-code INSEE nomenclature is far
-   from fully covered yet.
+   RESOLVED as of 2026-09-02 against the official INSEE "catégorie
+   juridique" nomenclature (260 Niveau III codes) — see LEGAL_FORM_LABELS
+   / IS_SOLE_SHAREHOLDER_BY_CODE below and the detailed note at the
+   bottom of this file. There is NO "5498" code and no separate EURL
+   code at all in the official nomenclature — an earlier version of this
+   module invented that mapping from a low-confidence web source; it has
+   been removed. 1000=EI (N/A), 5499=SARL générique and 5710=SAS are
+   both explicitly left ambiguous (None) rather than guessed. 105 other
+   codes (SA all sub-forms, SNC, sociétés civiles incl. SCI, GIE/GEIE,
+   agricultural cooperatives) are confidently False (structurally
+   require 2+ members under French company law). Everything else is
+   unmapped (None), not "no".
 
 Requirements:
     pip install requests pandas
