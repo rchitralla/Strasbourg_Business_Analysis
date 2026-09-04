@@ -58,17 +58,18 @@ def _department_cache_path(dept_code: str) -> str:
 def fetch_mergers_for_department(dept_code: str, min_year: int, max_year: int) -> pd.DataFrame:
     """
     Fetch every merger-related "Modifications diverses" notice for one
-    department in [min_year, max_year], cached to disk (see
-    bc.fetch_and_cache) so re-running never re-hits the API for data
-    already fetched.
+    department in [min_year, max_year], cached to disk. Uses
+    bc.fetch_and_cache_by_date_range() rather than a plain fetch, in
+    case a busy department/wide year range exceeds the API's 10,000-
+    record cap (confirmed live for a different family — see
+    src/company_creation/share_capital.py).
     """
-    where = (
-        f'{bc.GEOGRAPHY_FIELD}="{dept_code}" '
-        f'AND dateparution>="{min_year}-01-01" '
-        f'AND dateparution<="{max_year}-12-31" '
-        f'AND {bc.MERGER_WHERE_CLAUSE}'
+    where_base = f'{bc.GEOGRAPHY_FIELD}="{dept_code}" AND {bc.MERGER_WHERE_CLAUSE}'
+    return bc.fetch_and_cache_by_date_range(
+        where_base, date_field="dateparution",
+        date_start=f"{min_year}-01-01", date_end=f"{max_year}-12-31",
+        cache_path=_department_cache_path(dept_code),
     )
-    return bc.fetch_and_cache(where, _department_cache_path(dept_code))
 
 
 def extract_row(record: dict) -> dict | None:
@@ -77,7 +78,7 @@ def extract_row(record: dict) -> dict | None:
         return None
 
     listepersonnes = bc.parse_json_field(record.get("listepersonnes")) or {}
-    personne = listepersonnes.get("personne", {})
+    personne = bc.first_or_self(listepersonnes.get("personne"))
 
     date_parution = record.get("dateparution")
     try:

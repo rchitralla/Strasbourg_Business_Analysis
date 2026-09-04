@@ -160,6 +160,7 @@ they need a nested field json_normalize didn't flatten usefully.
 
 import json
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -170,6 +171,18 @@ PAGE_SIZE = 100  # Opendatasoft v2.1 max rows per page
 SECONDS_BETWEEN_REQUESTS = 0.5
 MAX_RETRIES = 5
 RETRY_BACKOFF_SECONDS = 5
+
+# CONFIRMED live (2026-09-05): this Opendatasoft Explore API v2.1 dataset
+# hard-caps offset+limit at 10,000, exactly like the recherche-entreprises
+# API this project already had to work around once for Sirene ("Invalid
+# value for sum of offset + limit API parameter: 10100 was found but
+# <= 10000 is expected"). A single fetch_all() call against a filter
+# matching more than this WILL silently stop partway through - use
+# fetch_all_bisecting()/fetch_and_cache_by_date_range() below instead of
+# fetch_and_cache() for any query that might exceed it (in practice: any
+# per-department, multi-year fetch - a department's full company-creation
+# volume over 11 years is easily 60,000+ records).
+MAX_SAFE_RECORDS_PER_QUERY = 9900  # small safety margin under the real 10,000 cap
 
 GEOGRAPHY_FIELD = "numerodepartement"  # confirmed 2026-09-04, NOT "departement"
 
@@ -229,6 +242,26 @@ def parse_json_field(value):
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return None
+
+
+def first_or_self(value):
+    """
+    CONFIRMED live (2026-09-05, via an AttributeError on a real
+    "Créations" record): nested keys like
+    listeetablissements.etablissement and listepersonnes.personne come
+    back as a single dict when there's exactly one, but a LIST of dicts
+    when there's more than one — a classic XML->JSON single-vs-array
+    conversion quirk. Use this on the result of a
+    parsed_field.get("etablissement")/.get("personne") call rather than
+    assuming a dict: returns the first item for a non-empty list, the
+    value unchanged if it's already a dict, or {} for anything else
+    (None, empty list, empty dict).
+    """
+    if isinstance(value, list):
+        return value[0] if value else {}
+    if isinstance(value, dict):
+        return value
+    return {}
 
 
 def _get_with_retry(params: dict, timeout: int = 30):
@@ -349,5 +382,100 @@ def fetch_and_cache(where: str, cache_path: str, max_records: int = None, resume
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False)
         print(f"Cached {len(records)} record(s) to {cache_path}")
+
+    return pd.json_normalize(records)
+
+
+def fetch_all_bisecting(
+    where_base: str, date_field: str, date_start: str, date_end: str,
+    safe_limit: int = MAX_SAFE_RECORDS_PER_QUERY,
+) -> tuple[list[dict], bool]:
+    """
+    Fetch every record matching `where_base` within [date_start, date_end]
+    (ISO "YYYY-MM-DD" strings), recursively bisecting the date range
+    whenever a sub-range's count exceeds MAX_SAFE_RECORDS_PER_QUERY — see
+    that constant's comment for why this is necessary (this API hard-caps
+    offset+limit at 10,000, confirmed live).
+
+    Returns (records, complete). complete is False if ANY sub-window
+    couldn't be fully fetched (a count_records() failure, or single-day
+    volume that still exceeds the cap and can't be bisected further) —
+    callers MUST check this before caching/trusting the result, exactly
+    like sirene_v3_client.py's fetch_establishments().
+    """
+    where = f'{where_base} AND {date_field}>="{date_start}" AND {date_field}<="{date_end}"'
+    total = count_records(where)
+
+    if total is None:
+        print(f"  count_records failed for {date_start}..{date_end} — this window is INCOMPLETE")
+        return [], False
+    if total == 0:
+        return [], True
+
+    if total <= safe_limit:
+        print(f"  {total} record(s) in {date_start}..{date_end} (within the {safe_limit} cap, fetching directly)")
+        return fetch_all(where), True
+
+    start_dt = date.fromisoformat(date_start)
+    end_dt = date.fromisoformat(date_end)
+
+    if start_dt >= end_dt:
+        print(f"  WARNING: {total} record(s) on a single day ({date_start}) exceed the "
+              f"{safe_limit} cap and cannot be split further — fetching only the first "
+              f"{safe_limit}, this day's data is INCOMPLETE.")
+        return fetch_all(where, max_records=safe_limit), False
+
+    mid_dt = start_dt + (end_dt - start_dt) // 2
+    print(f"  {total} record(s) in {date_start}..{date_end} exceeds the {safe_limit} cap — "
+          f"splitting at {mid_dt.isoformat()}")
+
+    left_records, left_complete = fetch_all_bisecting(where_base, date_field, date_start, mid_dt.isoformat(), safe_limit)
+    next_day = (mid_dt + timedelta(days=1)).isoformat()
+    right_records, right_complete = fetch_all_bisecting(where_base, date_field, next_day, date_end, safe_limit)
+
+    return left_records + right_records, (left_complete and right_complete)
+
+
+def fetch_and_cache_by_date_range(
+    where_base: str, date_field: str, date_start: str, date_end: str,
+    cache_path: str, resume: bool = True,
+) -> pd.DataFrame:
+    """
+    fetch_all_bisecting(), but cached to disk — the date-range-aware
+    replacement for fetch_and_cache() that every per-department,
+    multi-year fetch should use instead, since department-level BODACC
+    volume over several years routinely exceeds the 10,000-record cap
+    (confirmed: 66,067 "Créations" notices for Bas-Rhin alone,
+    2015-2026). Only caches when the fetch is COMPLETE — an incomplete
+    fetch (see fetch_all_bisecting's docstring) is never silently cached
+    as if it were the full dataset; re-run to retry it.
+
+        df = fetch_and_cache_by_date_range(
+            'numerodepartement="67" AND familleavis_lib="Créations"',
+            date_field="dateparution", date_start="2015-01-01", date_end="2026-12-31",
+            cache_path="data/processed/bodacc_creations_dept_67.json",
+        )
+    """
+    cache_file = Path(cache_path)
+    if resume and cache_file.exists():
+        print(f"Loading cached BODACC records from {cache_path} "
+              f"(delete this file to force a refetch)")
+        with open(cache_file, encoding="utf-8") as f:
+            records = json.load(f)
+        return pd.json_normalize(records)
+
+    print(f"Fetching from BODACC (where: {where_base}, {date_start}..{date_end})...")
+    records, complete = fetch_all_bisecting(where_base, date_field, date_start, date_end)
+
+    if complete:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False)
+        print(f"Cached {len(records)} record(s) to {cache_path}")
+    else:
+        print(f"  NOT caching {cache_path} — this fetch was INCOMPLETE (hit the API's "
+              f"{MAX_SAFE_RECORDS_PER_QUERY}-record safe cap on a window that couldn't be "
+              f"split further, or a count_records() call failed partway through). Re-run "
+              f"to retry — do NOT treat {len(records)} as the true total.")
 
     return pd.json_normalize(records)

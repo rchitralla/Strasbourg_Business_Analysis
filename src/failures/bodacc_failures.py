@@ -74,16 +74,19 @@ def _department_cache_path(dept_code: str) -> str:
 def fetch_failures_for_department(dept_code: str, min_year: int, max_year: int) -> pd.DataFrame:
     """
     Fetch every "Procédures collectives" notice for one department in
-    [min_year, max_year], cached to disk (see bc.fetch_and_cache) so
-    re-running never re-hits the API for data already fetched.
+    [min_year, max_year], cached to disk. Uses
+    bc.fetch_and_cache_by_date_range() rather than a plain fetch — a
+    wide enough year range or a busier department can exceed the API's
+    10,000-record cap (confirmed live for a different family: 66,067
+    "Créations" notices for Bas-Rhin alone over 2015-2026), so the date
+    range must be bisected rather than fetched in one query.
     """
-    where = (
-        f'{bc.GEOGRAPHY_FIELD}="{dept_code}" '
-        f'AND familleavis_lib="Procédures collectives" '
-        f'AND dateparution>="{min_year}-01-01" '
-        f'AND dateparution<="{max_year}-12-31"'
+    where_base = f'{bc.GEOGRAPHY_FIELD}="{dept_code}" AND familleavis_lib="Procédures collectives"'
+    return bc.fetch_and_cache_by_date_range(
+        where_base, date_field="dateparution",
+        date_start=f"{min_year}-01-01", date_end=f"{max_year}-12-31",
+        cache_path=_department_cache_path(dept_code),
     )
-    return bc.fetch_and_cache(where, _department_cache_path(dept_code))
 
 
 def extract_row(record: dict) -> dict | None:
