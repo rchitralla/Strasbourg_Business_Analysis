@@ -32,7 +32,7 @@ def main():
         print("=" * 70)
         print(f"SIREN: {siren}")
         print("=" * 70)
-        params = {"q": f"siren:{siren}", "nombre": 1}
+        params = {"q": f"siren:{siren}", "curseur": "*", "nombre": 1}
         import requests
         response = requests.get(sv3.SEARCH_ENDPOINT, params=params, headers=sv3._headers(), timeout=30)
         print(f"HTTP {response.status_code}")

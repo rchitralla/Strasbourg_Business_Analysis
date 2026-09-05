@@ -77,9 +77,14 @@ def lookup_siren(siren: str) -> dict | None:
     callers should treat None as "no data available", not "error", since
     a genuinely deregistered/very old company may not resolve.
     """
-    params = {"q": f"siren:{siren}", "nombre": 1}
+    # CONFIRMED live (2026-09-05): omitting `curseur` causes an HTTP 400
+    # with an empty body on this endpoint — every other working call in
+    # sirene_v3_client.py always includes it, even for a single-record
+    # lookup. Not optional on this API version.
+    params = {"q": f"siren:{siren}", "curseur": "*", "nombre": 1}
     response = sv3._get_with_retry(sv3.SEARCH_ENDPOINT, params, sv3._headers(), timeout=30)
     if response.status_code != 200:
+        print(f"  lookup_siren({siren}) failed: HTTP {response.status_code}: {response.text[:200]}")
         return None
     results = response.json().get("etablissements", [])
     if not results:
