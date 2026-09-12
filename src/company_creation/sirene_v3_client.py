@@ -557,18 +557,60 @@ def fetch_national_yearly_totals(min_year: int, max_year: int) -> "pd.DataFrame"
     return pd.DataFrame(rows)
 
 
+def plot_department_share_of_national(
+    combined_df: "pd.DataFrame",
+    output_path: str = "outputs/charts/france_creations_dept_pct_of_national.png",
+) -> "pd.DataFrame":
+    """
+    The readable alternative to plotting raw counts together: each
+    department's creation count as a % of the France national total for
+    the same year. Confirmed live (2026-09-14) that raw counts differ
+    by ~2 orders of magnitude (Bas-Rhin ~26k vs. France ~1.9M in 2023),
+    which would make the department bars invisible next to the national
+    one on a shared axis — this is the fix.
+
+    combined_df: run_national()'s (year, region, count) output, or
+    anything with the same shape (must contain a "France (national)"
+    region).
+    """
+    from src.common.plotting import new_figure, save, REGION_COLORS
+
+    pivot = combined_df.pivot_table(index="year", columns="region", values="count", aggfunc="sum")
+    if "France (national)" not in pivot.columns:
+        raise KeyError("'France (national)' column not found in combined_df — run run_national() first.")
+
+    national = pivot["France (national)"]
+    dept_cols = [c for c in pivot.columns if c != "France (national)"]
+    pct = pivot[dept_cols].div(national, axis=0) * 100
+
+    fig, ax = new_figure()
+    colors = [REGION_COLORS.get(c, "#333333") for c in pct.columns]
+    pct.plot(kind="bar", ax=ax, color=colors, width=0.8)
+    ax.set_title("Each Department's New Establishments as % of France's National Total",
+                 fontsize=14, pad=12)
+    ax.set_xlabel("Year")
+    ax.set_ylabel("% of national total")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=9, title="Department")
+    save(fig, output_path)
+    return pct
+
+
 def run_national(min_year: int = 2015, max_year: int = 2026):
     """
     Fetch the France-wide yearly totals and combine them with the
     already-fetched department-level data (reads collect_all_departments()'s
     cached per-department CSVs — does NOT re-fetch departments) into one
     (year, region, count) DataFrame, then chart Bas-Rhin/Haut-Rhin/
-    Moselle vs. France (national) together.
+    Moselle vs. France (national) together (both as raw counts and as
+    each department's % share of the national total — see
+    plot_department_share_of_national()'s docstring for why the % chart
+    is the one to actually present).
 
     Run collect_all_departments() (or run_all()) first if you haven't
     already, and verify_yearly_total_against_cache() before this, to
     confirm header.total is trustworthy.
     """
+    from datetime import date
     from pathlib import Path as _Path
     import pandas as pd
     from config.regions import FRENCH_DEPARTMENTS
@@ -591,6 +633,12 @@ def run_national(min_year: int = 2015, max_year: int = 2026):
 
     combined = pd.concat(dept_frames + [national_df], ignore_index=True)
 
+    current_year = date.today().year
+    if max_year >= current_year:
+        print(f"\nNOTE: {current_year} is not yet complete — its total is a partial-year "
+              f"figure, not comparable to a full year. Exclude it or caption it explicitly "
+              f"on any chart/slide that includes it.")
+
     csv_path = "data/processed/france_creations_by_year_dept_vs_national.csv"
     _Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
     combined.to_csv(csv_path, index=False)
@@ -602,13 +650,11 @@ def run_national(min_year: int = 2015, max_year: int = 2026):
         ylabel="Number of new establishments",
         output_path="outputs/charts/france_creations_dept_vs_national.png",
     )
-    print("\nNOTE: France's national total (~600k+/year) will dwarf any single "
-          "department (~a few thousand/year) on a shared raw-count axis — the "
-          "department bars will be barely visible next to it. For the actual "
-          "slide, consider a per-capita rate (creations per 1,000 residents,"
-          " same normalization already used for the BW Regierungsbezirk "
-          "comparison) or showing each department's count as a % of the "
-          "national total, rather than raw counts side by side.")
+    print("\nNOTE: that raw-count chart is dominated by the national bar (~2 orders "
+          "of magnitude larger) — see plot_department_share_of_national() for the "
+          "readable version, generated below.")
+    plot_department_share_of_national(combined)
+
     return combined
 
 
