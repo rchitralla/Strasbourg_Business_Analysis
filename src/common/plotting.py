@@ -7,18 +7,33 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.colors import LinearSegmentedColormap
 
 FIGSIZE = (12, 6.75)  # 16:9, fits a PPT slide
 DPI = 200
 
-# One consistent color per geography across every chart in the project.
+# Brand palette (set 2026-09-12) — every chart in the project derives its
+# colors from these two anchors, not arbitrary/independent hex values.
+PRIMARY_COLOR = "#162B2B"    # dark teal — used for single-series charts
+                              # and as the most visually prominent series
+SECONDARY_COLOR = "#7FA087"  # sage — the lighter anchor
+
+# One consistent color per geography across every chart in the project,
+# interpolated between SECONDARY_COLOR (lightest) and PRIMARY_COLOR
+# (darkest) so the whole family stays within the two brand colors.
 REGION_COLORS = {
-    "Bas-Rhin": "#2E5EAA",
-    "Haut-Rhin": "#4E8AD4",
-    "Moselle": "#7FB2E5",
-    "France (national)": "#888888",
-    "Baden-Württemberg (Land)": "#A63A3A",
+    "Bas-Rhin": "#B9CBBD",
+    "Haut-Rhin": SECONDARY_COLOR,
+    "Moselle": "#456054",
+    "France (national)": "#DFE7E1",
+    "Baden-Württemberg (Land)": PRIMARY_COLOR,
 }
+
+# For charts with an arbitrary/unknown number of categories (e.g. a
+# stacked bar with N reason categories) — interpolates smoothly between
+# the two brand colors instead of falling back to an unrelated
+# matplotlib colormap like "tab20".
+BRAND_COLORMAP = LinearSegmentedColormap.from_list("brand", [SECONDARY_COLOR, PRIMARY_COLOR])
 
 
 def new_figure():

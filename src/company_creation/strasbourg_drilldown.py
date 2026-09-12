@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config.regions import STRASBOURG_COMMUNE_CODE
 from src.company_creation.france_creations import fetch_companies, build_dataframe
-from src.common.plotting import new_figure, save
+from src.common.plotting import new_figure, save, PRIMARY_COLOR, BRAND_COLORMAP
 
 CSV_PATH = "data/processed/strasbourg_creations_by_year_sector.csv"
 
@@ -27,7 +27,7 @@ CSV_PATH = "data/processed/strasbourg_creations_by_year_sector.csv"
 def plot_yearly_trend(df, output_path="outputs/charts/strasbourg_creations_trend.png"):
     yearly_totals = df.groupby("year")["count"].sum()
     fig, ax = new_figure()
-    ax.bar(yearly_totals.index.astype(str), yearly_totals.values, color="#2E5EAA")
+    ax.bar(yearly_totals.index.astype(str), yearly_totals.values, color=PRIMARY_COLOR)
     ax.set_title("Total New Company Creations in Strasbourg per Year", fontsize=15, pad=12)
     ax.set_xlabel("Year")
     ax.set_ylabel("Number of new companies")
@@ -40,7 +40,7 @@ def plot_stacked_bar(df, output_path="outputs/charts/strasbourg_creations_by_sec
     pivot = df.pivot_table(index="year", columns="sector", values="count", aggfunc="sum", fill_value=0)
     pivot = pivot[pivot.sum().sort_values(ascending=False).index]
     fig, ax = new_figure()
-    pivot.plot(kind="bar", stacked=True, ax=ax, colormap="tab20", width=0.8)
+    pivot.plot(kind="bar", stacked=True, ax=ax, colormap=BRAND_COLORMAP, width=0.8)
     ax.set_title("New Company Creations in Strasbourg by Year and Sector", fontsize=15, pad=12)
     ax.set_xlabel("Year")
     ax.set_ylabel("Number of new companies")
@@ -51,7 +51,7 @@ def plot_stacked_bar(df, output_path="outputs/charts/strasbourg_creations_by_sec
 def plot_sector_totals(df, output_path="outputs/charts/strasbourg_creations_by_sector_total.png"):
     sector_totals = df.groupby("sector")["count"].sum().sort_values(ascending=True)
     fig, ax = new_figure()
-    ax.barh(sector_totals.index, sector_totals.values, color="#2E5EAA")
+    ax.barh(sector_totals.index, sector_totals.values, color=PRIMARY_COLOR)
     ax.set_title("Total Company Creations in Strasbourg by Sector (All Years)", fontsize=15, pad=12)
     ax.set_xlabel("Number of new companies")
     save(fig, output_path)

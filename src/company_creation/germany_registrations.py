@@ -134,7 +134,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config.regions import GERMAN_REGIONS, MIN_YEAR, MAX_YEAR
-from src.common.plotting import new_figure, save
+from src.common.plotting import new_figure, save, PRIMARY_COLOR, BRAND_COLORMAP
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -450,7 +450,7 @@ def plot_yearly_trend(df: pd.DataFrame, output_path: str = "outputs/charts/bw_re
     yearly_totals = df.groupby("year")["count"].sum()
 
     fig, ax = new_figure()
-    ax.bar(yearly_totals.index.astype(str), yearly_totals.values, color="#A63A3A")
+    ax.bar(yearly_totals.index.astype(str), yearly_totals.values, color=PRIMARY_COLOR)
     ax.set_title("New Business Registrations in Baden-Württemberg per Year", fontsize=15, pad=12)
     ax.set_xlabel("Year")
     ax.set_ylabel("Number of new registrations")
@@ -471,7 +471,7 @@ def plot_stacked_bar(df: pd.DataFrame, output_path: str = "outputs/charts/bw_reg
     pivot = pivot[pivot.sum().sort_values(ascending=False).index]
 
     fig, ax = new_figure()
-    pivot.plot(kind="bar", stacked=True, ax=ax, colormap="tab20", width=0.8)
+    pivot.plot(kind="bar", stacked=True, ax=ax, colormap=BRAND_COLORMAP, width=0.8)
     ax.set_title("Business Registrations in Baden-Württemberg by Year and Reason", fontsize=15, pad=12)
     ax.set_xlabel("Year")
     ax.set_ylabel("Number of registrations")
@@ -484,7 +484,7 @@ def plot_reason_totals(df: pd.DataFrame, output_path: str = "outputs/charts/bw_r
     reason_totals = df.groupby("reason")["count"].sum().sort_values(ascending=True)
 
     fig, ax = new_figure()
-    ax.barh(reason_totals.index, reason_totals.values, color="#A63A3A")
+    ax.barh(reason_totals.index, reason_totals.values, color=PRIMARY_COLOR)
     ax.set_title("Total Business Registrations in Baden-Württemberg by Reason (All Years)", fontsize=15, pad=12)
     ax.set_xlabel("Number of registrations")
     save(fig, output_path)
