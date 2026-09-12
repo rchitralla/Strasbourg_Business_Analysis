@@ -352,42 +352,68 @@ def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True)
     categories broken out, e.g. to chart Neuerrichtungen vs. Zuzüge vs.
     sonstige Anmeldung directly.
 
-    NOTE: ffcsv column names vary slightly by table and have NOT been
-    confirmed against a live response yet. Common patterns are 'Zeit' /
-    'Zeit_Label' for the year, one or more '<n>_Merkmal_Label' /
-    '<n>_Auspraegung_Label' columns for classifying variables (here:
-    GEWNW1's reason categories), and 'Wert' for the value. Adjust the
-    column names below (YEAR_COL, REASON_COL, VALUE_COL) to match what
-    fetch_and_parse_table() printed for your specific table.
-    """
-    YEAR_COL = "Zeit"                     # <-- confirm/adjust
-    REASON_COL = "1_Auspraegung_Label"    # <-- confirm/adjust
-    VALUE_COL = "Wert"                    # <-- confirm/adjust
+    CONFIRMED live (2026-09-12) — the real ffcsv column names for
+    TABLE_CODE_LAND are a "long" format, quite different from earlier
+    guesses:
+      time                        -> the year (e.g. 2024)
+      1_variable_code/_label      -> the regional variable's NAME (e.g.
+                                      "DLAND"/"Bundesländer")
+      1_variable_attribute_label  -> the regional variable's VALUE for
+                                      this row (e.g. "Baden-Württemberg")
+      2_variable_code/_label      -> the classifying variable's NAME —
+                                      CONFIRMED to be GEWNW5 ("Grund der
+                                      Gewerbeanmeldung") by default, NOT
+                                      GEWNW1 as originally assumed
+      2_variable_attribute_label  -> the classifying variable's VALUE
+                                      (e.g. "Zuzüge", "sonstige Anmeldung")
+      value                       -> the count
+      value_variable_code/_label  -> which measure this is (e.g. "GEW011")
 
-    missing = [c for c in (YEAR_COL, REASON_COL, VALUE_COL) if c not in df_raw.columns]
+    IMPORTANT: GEWNW5 (the classifying variable this table actually
+    returns) may have only 2 categories per the live table-builder UI —
+    possibly Zuzüge/sonstige Anmeldung WITHOUT a "Neuerrichtungen" value
+    of its own (that may live under the separate GEWNW3 variable
+    instead, seen as a sibling in inspect_table_metadata()'s output).
+    If so, filter_to_neuerrichtungen can't work by direct text-matching
+    here — Neuerrichtungen would need to be derived by SUBTRACTION
+    (unclassified GEW011 total minus the GEWNW5 categories) instead.
+    Check df_raw["2_variable_attribute_label"].unique() before trusting
+    the filter below.
+    """
+    YEAR_COL = "time"
+    REGION_COL = "1_variable_attribute_label"
+    REASON_COL = "2_variable_attribute_label"
+    VALUE_COL = "value"
+
+    missing = [c for c in (YEAR_COL, REGION_COL, REASON_COL, VALUE_COL) if c not in df_raw.columns]
     if missing:
         raise KeyError(
             f"Expected column(s) {missing} not found. "
             f"Available columns: {list(df_raw.columns)}. "
-            "Update YEAR_COL/REASON_COL/VALUE_COL in tidy_dataframe()."
+            "Update YEAR_COL/REGION_COL/REASON_COL/VALUE_COL in tidy_dataframe()."
         )
 
-    df = df_raw[[YEAR_COL, REASON_COL, VALUE_COL]].copy()
-    df.columns = ["year", "reason", "count"]
+    df = df_raw[[YEAR_COL, REGION_COL, REASON_COL, VALUE_COL]].copy()
+    df.columns = ["year", "region", "reason", "count"]
     df["year"] = pd.to_numeric(df["year"], errors="coerce")
     df["count"] = pd.to_numeric(df["count"], errors="coerce")
     df = df.dropna(subset=["year", "count"])
     df["year"] = df["year"].astype(int)
-    df = df.sort_values(["year", "reason"]).reset_index(drop=True)
+    df = df.sort_values(["year", "region", "reason"]).reset_index(drop=True)
 
     if not filter_to_neuerrichtungen:
         return df
 
-    # "Neuerrichtungen" is the CONFIRMED German label for GEWM0 (per the
-    # live Merkmal page), but ffcsv label formatting (capitalization,
-    # trailing text) hasn't been seen in a real response yet — check
-    # defensively rather than assume an exact string match works, same
-    # pattern as the Sirene NAFRev1/legal-form defensive checks.
+    # CONFIRMED live (2026-09-12): TABLE_CODE_LAND's default classifying
+    # variable is GEWNW5, whose own categories may NOT include
+    # "Neuerrichtungen" at all (it looked like a 2-value split — Zuzüge/
+    # sonstige Anmeldung — with Neuerrichtungen tracked separately under
+    # the sibling variable GEWNW3 instead, per inspect_table_metadata()).
+    # If so, this text match will correctly find nothing — that is
+    # informative, not a bug — and Neuerrichtungen needs to be derived
+    # by SUBTRACTION (unclassified GEW011 total minus these categories)
+    # rather than filtered directly. Check the warning below's printed
+    # distinct values before concluding this is broken vs. expected.
     matches = df["reason"].str.contains("Neuerrichtung", case=False, na=False)
     if not matches.any():
         print(f"WARNING: no 'reason' value containing 'Neuerrichtung' found — "
