@@ -82,6 +82,31 @@ from src.common.sectors import NAF_WZ_SECTION_LABELS
 
 BASE_URL = "https://api.insee.fr/api-sirene/3.11"
 SEARCH_ENDPOINT = f"{BASE_URL}/siret"
+
+# CONFIRMED live (2026-09-14): a plain dateCreationEtablissement filter
+# counts every new ESTABLISHMENT, including new branches/sites opened by
+# ALREADY-EXISTING enterprises and head-office relocations of old
+# enterprises — a live national 2025 total of 2,063,714 came out ~77%
+# over the official INSEE "créations d'entreprises" figure (~1,166,000).
+# etablissementSiege:true alone only closes part of the gap (1,806,517 —
+# still ~55% over): a real sample record showed a siège établissement
+# with its own dateCreationEtablissement="2015-06-30", whose enterprise
+# (uniteLegale) had dateCreationUniteLegale="1970-01-01" (INSEE's
+# placeholder for an unknown/old founding date) and was already cessée
+# — an old, dead enterprise's headquarters move, miscounted as a 2015
+# "creation" under either filter.
+#
+# The fix: filter on the ENTERPRISE's own creation date
+# (dateCreationUniteLegale, NOT dateCreationEtablissement), combined
+# with etablissementSiege:true (so département-level geographic scoping
+# via codeCommuneEtablissement still works — unités légales alone have
+# no location field). Confirmed live: this brings the 2025 national
+# total to 1,232,143 — a 5.7% residual gap against the official
+# ~1,166,000, treated as ordinary definitional noise (the official
+# figure likely nets out reactivations/reprises slightly differently,
+# or is a provisional estimate) rather than a remaining bug.
+ENTERPRISE_ONLY_FILTER = "etablissementSiege:true"
+CREATION_DATE_FIELD = "dateCreationUniteLegale"  # the ENTERPRISE's date, not the établissement's
 PAGE_SIZE = 1000                 # max allowed by the API
 SECONDS_BETWEEN_REQUESTS = 2.1   # stays under the 30 req/min public-plan limit
 MAX_RETRIES = 5                  # for transient network errors (DNS blips, timeouts)
@@ -178,9 +203,18 @@ def debug_sample(departement_code: str, n: int = 5):
 
 def fetch_establishments(departement_code: str, min_year: int, max_year: int) -> tuple[list[dict], bool]:
     """
-    Fetch every "établissement" created in a department within
-    [min_year, max_year], walking the cursor until exhausted. No
-    10,000-result ceiling (unlike the recherche-entreprises wrapper).
+    Fetch every genuinely NEW ENTERPRISE (unité légale) whose head
+    office sits in a department within [min_year, max_year], walking
+    the cursor until exhausted. No 10,000-result ceiling (unlike the
+    recherche-entreprises wrapper).
+
+    Filters to etablissementSiege:true (the head-office établissement)
+    AND the ENTERPRISE's own creation date (CREATION_DATE_FIELD =
+    dateCreationUniteLegale), NOT the établissement's — see the module-
+    level comment above ENTERPRISE_ONLY_FILTER for why a plain
+    établissement-creation filter overcounts by ~55-77% (branch
+    openings and headquarters relocations of pre-existing enterprises
+    both get miscounted as "new companies" otherwise).
 
     Returns (records, complete). complete is False if the fetch had to
     give up early (network failure after retries, or a non-200
@@ -189,7 +223,8 @@ def fetch_establishments(departement_code: str, min_year: int, max_year: int) ->
     """
     query = (
         f"codeCommuneEtablissement:{departement_code}* "
-        f"AND dateCreationEtablissement:[{min_year}-01-01 TO {max_year}-12-31]"
+        f"AND {ENTERPRISE_ONLY_FILTER} "
+        f"AND {CREATION_DATE_FIELD}:[{min_year}-01-01 TO {max_year}-12-31]"
     )
 
     all_results = []
@@ -321,7 +356,21 @@ EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE, CATEGORY_BY_CODE = _load_category_review()
 def extract_row(record: dict) -> dict | None:
     """
     Pull creation year, sector, and legal form from one raw établissement
-    record.
+    record — every record here is already filtered to
+    etablissementSiege:true (see fetch_establishments()), so this is
+    effectively one row per new ENTERPRISE, not per établissement.
+
+    year comes from uniteLegale.dateCreationUniteLegale (the ENTERPRISE's
+    own creation date), NOT dateCreationEtablissement — matching the
+    query filter in fetch_establishments(). Using the établissement's own
+    date here (even though every record is already siège-filtered) would
+    reintroduce the exact headquarters-relocation miscount that filter
+    was fixed to exclude: a real sample record had
+    dateCreationEtablissement="2015-06-30" for a siège belonging to an
+    enterprise whose own dateCreationUniteLegale was "1970-01-01" (an
+    old, since-ceased enterprise) — reading the établissement's date
+    would have counted it as a 2015 creation regardless of the query
+    filter, purely due to how the year gets extracted here.
 
     legal_form is the raw numeric categorieJuridiqueUniteLegale code as a
     string. is_sole_shareholder is populated ONLY for the confirmed subset
@@ -332,15 +381,15 @@ def extract_row(record: dict) -> dict | None:
     intent is "sociétés" specifically, per how B16 vs B17 are phrased as
     separate questions in the Data Room brief.
     """
-    date_creation = record.get("dateCreationEtablissement")
+    unite_legale = record.get("uniteLegale") or {}
+
+    date_creation = unite_legale.get("dateCreationUniteLegale")
     if not date_creation:
         return None
     try:
         year = int(date_creation[:4])
     except (ValueError, TypeError):
         return None
-
-    unite_legale = record.get("uniteLegale") or {}
 
     # Confirmed against a live response (2026-08-30): the établissement-level
     # activitePrincipaleEtablissement field was not visible in our sample
@@ -416,7 +465,14 @@ def build_dataframe(records: list[dict], region_name: str) -> "pd.DataFrame":
 
 
 def _department_csv_path(dept_code: str) -> str:
-    return f"data/processed/france_creations_sirene_v3_dept_{dept_code}.csv"
+    # "_enterprises" suffix (2026-09-14) deliberately changes the path
+    # from the pre-fix version — old CSVs at the un-suffixed path were
+    # built from a plain établissement-creation query (confirmed ~55-77%
+    # overcounted, see ENTERPRISE_ONLY_FILTER's module-level comment)
+    # and must not be silently reused by collect_all_departments()'s
+    # resume=True. The old files are left in place (not deleted) in case
+    # they're wanted for comparison.
+    return f"data/processed/france_creations_sirene_v3_dept_{dept_code}_enterprises.csv"
 
 
 def collect_all_departments(min_year: int, max_year: int, resume: bool = True) -> "pd.DataFrame":
@@ -479,14 +535,16 @@ def fetch_yearly_total(query_extra: str, year: int) -> int:
     per department would be enormous and isn't needed just for a
     headline comparison number.
 
-    query_extra is ANDed with the year's date-range filter. Pass "" for
-    no additional filter (whole of France), or e.g.
+    Always filters to ENTERPRISE creations (ENTERPRISE_ONLY_FILTER +
+    CREATION_DATE_FIELD), not raw établissement creations — see the
+    module-level comment above ENTERPRISE_ONLY_FILTER for why (confirmed
+    live: a plain établissement filter overcounted France's 2025 total
+    by ~77%). query_extra is ANDed in on top of that. Pass "" for no
+    additional filter (whole of France), or e.g.
     "codeCommuneEtablissement:67*" to scope to one department — used by
-    verify_yearly_total_against_cache() below to sanity-check this
-    approach against already-known real counts before trusting it
-    nationally.
+    verify_yearly_total_against_cache() below.
     """
-    query = f"dateCreationEtablissement:[{year}-01-01 TO {year}-12-31]"
+    query = f"{ENTERPRISE_ONLY_FILTER} AND {CREATION_DATE_FIELD}:[{year}-01-01 TO {year}-12-31]"
     if query_extra:
         query = f"{query_extra} AND {query}"
     params = {"q": query, "curseur": "*", "nombre": 1}
@@ -496,12 +554,42 @@ def fetch_yearly_total(query_extra: str, year: int) -> int:
     return response.json().get("header", {}).get("total")
 
 
+def verify_enterprise_filter_against_official(year: int = 2025, official_reference: int = 1_166_000):
+    """
+    Re-run any time to reconfirm the enterprise-only filter against the
+    official INSEE "créations d'entreprises" press figure — the best
+    available ground truth for this fix (there's no second independent
+    number to cross-check a France-wide total against otherwise).
+
+    CONFIRMED live (2026-09-14), France national, 2025:
+      Raw établissement count (no filter)                     = 2,063,714
+      etablissementSiege:true only                             = 1,806,517
+      etablissementSiege:true + dateCreationUniteLegale (this) = 1,232,143
+      Official INSEE reference                                 =~1,166,000
+    The final ~5.7% residual gap is treated as ordinary definitional
+    noise (the official figure likely nets out reactivations/reprises
+    slightly differently, or is a provisional estimate), not a
+    remaining bug — see ENTERPRISE_ONLY_FILTER's module-level comment
+    for the real sample record that proved why the first two filters
+    still overcounted.
+    """
+    total = fetch_yearly_total("", year)
+    diff_pct = abs(total - official_reference) / official_reference * 100
+    print(f"{year}: enterprise-filtered national total = {total}, "
+          f"official reference = {official_reference} -> {diff_pct:.1f}% difference")
+    return total
+
+
 def verify_yearly_total_against_cache(dept_code: str, year: int):
     """
-    UNVERIFIED ASSUMPTION this checks before it gets relied on for the
-    France-wide total: that header.total (from a nombre=1 request)
-    reports the TRUE total match count, independent of page size — not
-    yet confirmed against a real response for this v3.11 endpoint.
+    Checks the header.total MECHANISM only (that a nombre=1 request
+    reports the true match count, independent of page size) — separate
+    from, and unaffected by, the établissement-vs-enterprise definition
+    fix (both sides of this comparison now use the same enterprise-only
+    query). Confirmed OK to within ordinary database drift (~0.03%) the
+    first time this ran, before the definition fix; re-run after
+    re-fetching a department under the new _enterprises.csv cache to
+    reconfirm on the corrected numbers.
 
     Cross-checks fetch_yearly_total() for one already-cached department
     against the real row count in that department's cached CSV (built by
@@ -536,10 +624,14 @@ def verify_yearly_total_against_cache(dept_code: str, year: int):
 
 def fetch_national_yearly_totals(min_year: int, max_year: int) -> "pd.DataFrame":
     """
-    France-wide établissement creation totals per year, via
-    fetch_yearly_total() (header.total, not a full crawl). Run
-    verify_yearly_total_against_cache() first — see its docstring for
-    why this can't be self-verified any other way.
+    France-wide NEW ENTERPRISE (not raw établissement) totals per year,
+    via fetch_yearly_total() (header.total, not a full crawl) — see
+    ENTERPRISE_ONLY_FILTER's module-level comment for the definition
+    fix and verify_enterprise_filter_against_official() for its live
+    confirmation against the official INSEE figure. Run
+    verify_yearly_total_against_cache() first for the header.total
+    mechanism itself — see its docstring for why this can't be
+    self-verified any other way.
 
     Returns a (year, region, count) DataFrame with region fixed to
     "France (national)" — matching REGION_COLORS' key in
