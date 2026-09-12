@@ -21,20 +21,27 @@ DESIGNED FOR JUPYTER — usage:
     # 2. Step A — list candidate tables under the Gewerbeanzeigenstatistik
     tables = bw.search_tables_for_statistic()
 
-    # 3. Step B — once you spot the right table code in that list (look
-    #    for one broken down by Kreise + Wirtschaftsabschnitte/WZ2008),
-    #    inspect its structure to confirm variable/column names:
-    bw.inspect_table_metadata("52311-XX-XX-X")
+    # 3. Step B — CONFIRMED live: TABLE_CODE_KREISE ("52311-01-04-4") is
+    #    Kreis-level. There is NO sector/WZ variable on this statistic at
+    #    all — only a registration-REASON variable (GEWNW1). Inspect the
+    #    table's structure to confirm the exact ffcsv column names before
+    #    trusting tidy_dataframe()'s guesses:
+    bw.inspect_table_metadata(bw.TABLE_CODE_KREISE)
 
-    # 4. Step C — fetch, tidy, and chart it:
-    df_raw = bw.fetch_and_parse_table("52311-XX-XX-X")
-    df = bw.tidy_dataframe(df_raw)   # adjust YEAR_COL/SECTOR_COL/VALUE_COL
+    # 4. Step C — fetch, tidy (filters to genuine new creations by
+    #    default), and chart it:
+    df_raw = bw.fetch_and_parse_table(bw.TABLE_CODE_KREISE)
+    df = bw.tidy_dataframe(df_raw)   # adjust YEAR_COL/REASON_COL/VALUE_COL
                                        # inside this function if needed —
                                        # check the printed columns from
                                        # fetch_and_parse_table() first
     bw.plot_yearly_trend(df)
-    bw.plot_stacked_bar(df)
-    bw.plot_sector_totals(df)
+
+    # To chart the reason breakdown itself (Neuerrichtungen vs. Zuzüge
+    # vs. sonstige Anmeldung) instead of just the filtered total:
+    df_by_reason = bw.tidy_dataframe(df_raw, filter_to_neuerrichtungen=False)
+    bw.plot_stacked_bar(df_by_reason)
+    bw.plot_reason_totals(df_by_reason)
 
 Nothing runs automatically on import — every step above is a separate
 function call, so you can inspect output at each stage before moving on.
@@ -44,13 +51,53 @@ IMPORTANT CONTEXT:
 1. Free registration required at https://www.regionalstatistik.de/genesis/online
 
 2. The relevant statistic is EVAS 52311 "Gewerbeanzeigenstatistik"
-   (trade/business registration statistics). It records:
-     - Neuerrichtungen  -> genuine new business creations (closest match
-                           to INSEE's "créations d'entreprises")
-     - Zuzug            -> relocation of an existing business into the area
-     - Übernahme        -> takeover of an existing business
-   For a fair comparison with the French data, you generally want to
-   filter for "Neuerrichtungen" specifically.
+   (trade/business registration statistics).
+
+   CONFIRMED live (2026-09-12) — the classifying variable for
+   registration REASON is GEWNW1 ("Grund der Gewerbeanmeldung"), with
+   three values:
+     - GEWM0 = Neuerrichtungen  -> genuine new business creations
+                                   (closest match to INSEE's "créations
+                                   d'entreprises" — but per the official
+                                   definition text this ALSO includes
+                                   foundings via legal transformation
+                                   under the Umwandlungsgesetz, so it is
+                                   not a perfectly pure "brand-new
+                                   company" count either)
+     - GEWM1 = Zuzüge           -> relocation of an existing business
+                                   into the area
+     - GEWM2 = sonstige Anmeldung -> other registrations (incl. takeovers)
+   For a fair comparison with the French data, filter to GEWM0
+   ("Neuerrichtungen") specifically — see tidy_dataframe()'s
+   filter_to_neuerrichtungen parameter.
+
+   CONFIRMED live: there is NO Wirtschaftsabschnitt/WZ (economic sector)
+   classifying variable anywhere on this statistic — the full Merkmale
+   list is DINSG/DLAND/REGBEZ/KREISE (spatial), JAHR (time),
+   GEW001-GEW013 (registration/deregistration count measures), and
+   GEWNW1-GEWNW6 (registration/deregistration REASON, not sector). This
+   is a real, permanent methodological gap, not a bug to fix: at this
+   granularity Destatis does not publish a sector breakdown for business
+   registrations, likely due to small-cell disclosure suppression at
+   Kreis level. The German side of any "creations BY SECTOR" comparison
+   cannot be built from this statistic — only a total (optionally
+   Neuerrichtungen-only) count per region per year is available. Document
+   this explicitly wherever a French-vs-German sector chart is shown:
+   the French side has a sector split, the German side structurally does
+   not at this granularity.
+
+   Two tables exist under this statistic, confirmed live:
+     - 52311-01-04-4   ("regionale Tiefe: Kreise und krfr. Städte") —
+       Kreis (district) level only. Baden-Württemberg the STATE is not
+       itself a Kreis, so getting a Baden-Württemberg total from this
+       table means fetching every Kreis in BW (AGS codes starting "08")
+       and summing them yourself.
+     - 52311-01-04-4-B ("regionale Ebenen") — supports multiple regional
+       levels (likely including DLAND, the Land/state level) — probably
+       the better table to use for a direct Baden-Württemberg total
+       without needing to aggregate Kreise manually, but this has NOT
+       been directly confirmed yet — check its Merkmale/variable list
+       the same way before committing to it.
 
 3. Structural difference from France: Germany's Gewerbeanzeigen statistic
    does NOT cover "Freiberufler" (liberal professions — doctors, lawyers,
@@ -61,10 +108,10 @@ IMPORTANT CONTEXT:
    document this caveat wherever the comparison is shown (see
    docs/DATA_SOURCES.md).
 
-4. I could not verify the exact table code / column layout myself (no
-   live network access in the environment that wrote this script), so
-   double-check the printed columns at each step before trusting the
-   final chart.
+4. The exact ffcsv column names returned by fetch_and_parse_table() are
+   still NOT confirmed against a live response — double-check the
+   printed columns at each step before trusting tidy_dataframe()'s
+   column-name guesses (YEAR_COL/REASON_COL/VALUE_COL).
 
 Requirements:
     pip install requests pandas matplotlib
@@ -83,7 +130,6 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config.regions import GERMAN_REGIONS, MIN_YEAR, MAX_YEAR
-from src.common.sectors import NAF_WZ_SECTION_LABELS
 from src.common.plotting import new_figure, save
 
 # ---------------------------------------------------------------------------
@@ -117,17 +163,29 @@ def set_credentials(username: str = None, password: str = None):
 
 STATISTIC_CODE = "52311"  # Gewerbeanzeigenstatistik (business registrations)
 
+# CONFIRMED live (2026-09-12) — Kreis-level table for this statistic.
+# Baden-Württemberg the STATE is not itself a Kreis, so a BW total from
+# this table means summing every Kreis whose AGS code starts "08"
+# yourself. Table 52311-01-04-4-B ("regionale Ebenen") may support
+# querying the Land level directly instead — check its own Merkmale
+# before assuming this is the only/best option.
+TABLE_CODE_KREISE = "52311-01-04-4"
+
+# CONFIRMED live: the classifying variable for registration REASON (not
+# sector — no sector variable exists on this statistic, see module
+# docstring). GEWM0 is the "genuine new creation" category to filter to
+# for a fair comparison with the French Sirene data.
+REASON_VARIABLE = "GEWNW1"
+REASON_NEUERRICHTUNGEN = "GEWM0"   # genuine new creations
+REASON_ZUZUEGE = "GEWM1"           # relocations
+REASON_SONSTIGE = "GEWM2"          # other (incl. takeovers)
+
 # Default region: whole of Baden-Württemberg. See config/regions.py for
 # the individual Stadtkreise (Stuttgart, Karlsruhe, Freiburg, ...).
 REGIONAL_KEY = GERMAN_REGIONS["baden_wurttemberg"].ags_code
 
 START_YEAR = MIN_YEAR
 END_YEAR = MAX_YEAR
-
-# WZ 2008 sections map almost 1:1 onto France's NAF sections (both derive
-# from the EU's NACE Rev. 2) — reuse the shared mapping so French and
-# German charts use identical sector labels.
-WZ_SECTION_LABELS = NAF_WZ_SECTION_LABELS
 
 
 def _auth_params(extra: dict) -> dict:
@@ -241,37 +299,67 @@ def fetch_and_parse_table(
     return df
 
 
-def tidy_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
+def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True) -> pd.DataFrame:
     """
-    Reduce the raw ffcsv table to a tidy (year, sector, count) DataFrame.
+    Reduce the raw ffcsv table to a tidy (year, reason, count) DataFrame
+    — NOTE: "reason" (registration reason: Neuerrichtungen/Zuzüge/
+    sonstige Anmeldung), NOT sector. This statistic has NO sector/WZ
+    classifying variable at all (confirmed live 2026-09-12 — see module
+    docstring) — an earlier version of this function assumed one existed
+    and called this column "sector", which was wrong.
 
-    NOTE: ffcsv column names vary slightly by table. Common patterns are
-    'Zeit' / 'Zeit_Label' for the year, one or more '<n>_Merkmal_Label' /
-    '<n>_Auspraegung_Label' columns for classifying variables (like WZ
-    section or registration reason), and 'Wert' for the value. Adjust the
-    column names below (YEAR_COL, SECTOR_COL, VALUE_COL) to match what
+    filter_to_neuerrichtungen=True (default) additionally restricts the
+    result to REASON_NEUERRICHTUNGEN only (genuine new creations, the
+    fair comparison point with French Sirene data) and drops the
+    now-redundant "reason" column. Pass False to keep all three reason
+    categories broken out, e.g. to chart Neuerrichtungen vs. Zuzüge vs.
+    sonstige Anmeldung directly.
+
+    NOTE: ffcsv column names vary slightly by table and have NOT been
+    confirmed against a live response yet. Common patterns are 'Zeit' /
+    'Zeit_Label' for the year, one or more '<n>_Merkmal_Label' /
+    '<n>_Auspraegung_Label' columns for classifying variables (here:
+    GEWNW1's reason categories), and 'Wert' for the value. Adjust the
+    column names below (YEAR_COL, REASON_COL, VALUE_COL) to match what
     fetch_and_parse_table() printed for your specific table.
     """
     YEAR_COL = "Zeit"                     # <-- confirm/adjust
-    SECTOR_COL = "1_Auspraegung_Label"    # <-- confirm/adjust
+    REASON_COL = "1_Auspraegung_Label"    # <-- confirm/adjust
     VALUE_COL = "Wert"                    # <-- confirm/adjust
 
-    missing = [c for c in (YEAR_COL, SECTOR_COL, VALUE_COL) if c not in df_raw.columns]
+    missing = [c for c in (YEAR_COL, REASON_COL, VALUE_COL) if c not in df_raw.columns]
     if missing:
         raise KeyError(
             f"Expected column(s) {missing} not found. "
             f"Available columns: {list(df_raw.columns)}. "
-            "Update YEAR_COL/SECTOR_COL/VALUE_COL in tidy_dataframe()."
+            "Update YEAR_COL/REASON_COL/VALUE_COL in tidy_dataframe()."
         )
 
-    df = df_raw[[YEAR_COL, SECTOR_COL, VALUE_COL]].copy()
-    df.columns = ["year", "sector", "count"]
+    df = df_raw[[YEAR_COL, REASON_COL, VALUE_COL]].copy()
+    df.columns = ["year", "reason", "count"]
     df["year"] = pd.to_numeric(df["year"], errors="coerce")
     df["count"] = pd.to_numeric(df["count"], errors="coerce")
     df = df.dropna(subset=["year", "count"])
     df["year"] = df["year"].astype(int)
+    df = df.sort_values(["year", "reason"]).reset_index(drop=True)
 
-    return df.sort_values(["year", "sector"]).reset_index(drop=True)
+    if not filter_to_neuerrichtungen:
+        return df
+
+    # "Neuerrichtungen" is the CONFIRMED German label for GEWM0 (per the
+    # live Merkmal page), but ffcsv label formatting (capitalization,
+    # trailing text) hasn't been seen in a real response yet — check
+    # defensively rather than assume an exact string match works, same
+    # pattern as the Sirene NAFRev1/legal-form defensive checks.
+    matches = df["reason"].str.contains("Neuerrichtung", case=False, na=False)
+    if not matches.any():
+        print(f"WARNING: no 'reason' value containing 'Neuerrichtung' found — "
+              f"filter_to_neuerrichtungen returned nothing. Distinct reason "
+              f"values seen: {sorted(df['reason'].unique())}. Adjust the match "
+              f"string in tidy_dataframe() or pass filter_to_neuerrichtungen=False.")
+        return df[matches]
+
+    return df[matches].drop(columns=["reason"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -291,26 +379,34 @@ def plot_yearly_trend(df: pd.DataFrame, output_path: str = "outputs/charts/bw_re
     save(fig, output_path)
 
 
-def plot_stacked_bar(df: pd.DataFrame, output_path: str = "outputs/charts/bw_registrations_by_sector.png"):
-    pivot = df.pivot_table(index="year", columns="sector", values="count", aggfunc="sum", fill_value=0)
+def plot_stacked_bar(df: pd.DataFrame, output_path: str = "outputs/charts/bw_registrations_by_reason.png"):
+    """
+    Requires df from tidy_dataframe(filter_to_neuerrichtungen=False) —
+    i.e. a "reason" column (Neuerrichtungen/Zuzüge/sonstige Anmeldung),
+    NOT a sector breakdown. This statistic has no sector variable at all
+    (see module docstring) — an earlier version of this function
+    expected a "sector" column, which never existed in the real data.
+    """
+    pivot = df.pivot_table(index="year", columns="reason", values="count", aggfunc="sum", fill_value=0)
     pivot = pivot[pivot.sum().sort_values(ascending=False).index]
 
     fig, ax = new_figure()
     pivot.plot(kind="bar", stacked=True, ax=ax, colormap="tab20", width=0.8)
-    ax.set_title("New Business Registrations in Baden-Württemberg by Year and Sector", fontsize=15, pad=12)
+    ax.set_title("Business Registrations in Baden-Württemberg by Year and Reason", fontsize=15, pad=12)
     ax.set_xlabel("Year")
-    ax.set_ylabel("Number of new registrations")
-    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8, title="WZ sector")
+    ax.set_ylabel("Number of registrations")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8, title="Grund der Anmeldung")
     save(fig, output_path)
 
 
-def plot_sector_totals(df: pd.DataFrame, output_path: str = "outputs/charts/bw_registrations_by_sector_total.png"):
-    sector_totals = df.groupby("sector")["count"].sum().sort_values(ascending=True)
+def plot_reason_totals(df: pd.DataFrame, output_path: str = "outputs/charts/bw_registrations_by_reason_total.png"):
+    """Requires a "reason" column — see plot_stacked_bar()'s docstring."""
+    reason_totals = df.groupby("reason")["count"].sum().sort_values(ascending=True)
 
     fig, ax = new_figure()
-    ax.barh(sector_totals.index, sector_totals.values, color="#A63A3A")
-    ax.set_title("Total Business Registrations in Baden-Württemberg by Sector (All Years)", fontsize=15, pad=12)
-    ax.set_xlabel("Number of new registrations")
+    ax.barh(reason_totals.index, reason_totals.values, color="#A63A3A")
+    ax.set_title("Total Business Registrations in Baden-Württemberg by Reason (All Years)", fontsize=15, pad=12)
+    ax.set_xlabel("Number of registrations")
     save(fig, output_path)
 
 
@@ -318,30 +414,35 @@ def plot_sector_totals(df: pd.DataFrame, output_path: str = "outputs/charts/bw_r
 # Convenience: run steps B+C+charts together once you know the table code
 # ---------------------------------------------------------------------------
 
-def run_all(table_code: str, regional_key: str = REGIONAL_KEY):
+def run_all(table_code: str = TABLE_CODE_KREISE, regional_key: str = REGIONAL_KEY):
     """
-    Once you've identified the right table code (via search_tables_for_statistic
-    + inspect_table_metadata) and confirmed the column names tidy_dataframe()
-    expects, call this to fetch, tidy, save, and chart everything in one go.
+    Once you've confirmed the column names tidy_dataframe() expects
+    (via inspect_table_metadata() + a first fetch_and_parse_table()
+    call), run this to fetch, tidy, save, and chart everything in one
+    go. Defaults to the confirmed Kreis-level table
+    (TABLE_CODE_KREISE) — pass a different code (e.g. the
+    "regionale Ebenen" table) if that turns out to be the better choice
+    for a direct Baden-Württemberg total.
 
-        bw.run_all("52311-XX-XX-X")
+        bw.run_all()
     """
     print("Inspecting table metadata...")
     inspect_table_metadata(table_code)
 
     print("\nFetching and tidying data...")
     df_raw = fetch_and_parse_table(table_code, regional_key=regional_key)
-    df = tidy_dataframe(df_raw)
+    df = tidy_dataframe(df_raw)  # filtered to genuine new creations (Neuerrichtungen) by default
+    df_by_reason = tidy_dataframe(df_raw, filter_to_neuerrichtungen=False)
 
-    csv_path = "data/processed/bw_registrations_by_year_sector.csv"
+    csv_path = "data/processed/bw_registrations_by_year.csv"
     Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(csv_path, index=False)
     print(f"Tidy data saved to: {csv_path}")
 
     print("\nGenerating chart images...")
     plot_yearly_trend(df)
-    plot_stacked_bar(df)
-    plot_sector_totals(df)
+    plot_stacked_bar(df_by_reason)
+    plot_reason_totals(df_by_reason)
     print("\nAll charts saved — ready to insert into PowerPoint.")
 
     return df
