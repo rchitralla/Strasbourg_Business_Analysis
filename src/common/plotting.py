@@ -3,6 +3,8 @@ Shared chart styling so every axis (macro, M&A, company creation, LBO)
 produces PowerPoint-ready PNGs that look like one deck, not five.
 """
 
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -26,6 +28,7 @@ def new_figure():
 
 
 def save(fig, output_path: str):
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(output_path, dpi=DPI, bbox_inches="tight")
     plt.close(fig)
