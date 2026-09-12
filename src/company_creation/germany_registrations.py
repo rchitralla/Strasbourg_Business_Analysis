@@ -21,16 +21,18 @@ DESIGNED FOR JUPYTER — usage:
     # 2. Step A — list candidate tables under the Gewerbeanzeigenstatistik
     tables = bw.search_tables_for_statistic()
 
-    # 3. Step B — CONFIRMED live: TABLE_CODE_KREISE ("52311-01-04-4") is
-    #    Kreis-level. There is NO sector/WZ variable on this statistic at
-    #    all — only a registration-REASON variable (GEWNW1). Inspect the
-    #    table's structure to confirm the exact ffcsv column names before
-    #    trusting tidy_dataframe()'s guesses:
-    bw.inspect_table_metadata(bw.TABLE_CODE_KREISE)
+    # 3. Step B — CONFIRMED live: TABLE_CODE_LAND ("52311-01-04-4-B") lets
+    #    you select the Bundesländer level directly (Baden-Württemberg as
+    #    one row — no manual Kreis-summing needed). There is NO sector/WZ
+    #    variable on this statistic at all — only a registration-REASON
+    #    variable (GEWNW1). Inspect the table's structure to confirm the
+    #    exact ffcsv column names before trusting tidy_dataframe()'s
+    #    guesses:
+    bw.inspect_table_metadata(bw.TABLE_CODE_LAND)
 
     # 4. Step C — fetch, tidy (filters to genuine new creations by
     #    default), and chart it:
-    df_raw = bw.fetch_and_parse_table(bw.TABLE_CODE_KREISE)
+    df_raw = bw.fetch_and_parse_table(bw.TABLE_CODE_LAND)
     df = bw.tidy_dataframe(df_raw)   # adjust YEAR_COL/REASON_COL/VALUE_COL
                                        # inside this function if needed —
                                        # check the printed columns from
@@ -92,12 +94,14 @@ IMPORTANT CONTEXT:
        itself a Kreis, so getting a Baden-Württemberg total from this
        table means fetching every Kreis in BW (AGS codes starting "08")
        and summing them yourself.
-     - 52311-01-04-4-B ("regionale Ebenen") — supports multiple regional
-       levels (likely including DLAND, the Land/state level) — probably
-       the better table to use for a direct Baden-Württemberg total
-       without needing to aggregate Kreise manually, but this has NOT
-       been directly confirmed yet — check its Merkmale/variable list
-       the same way before committing to it.
+     - 52311-01-04-4-B ("regionale Ebenen") — CONFIRMED live: its
+       regional-level dropdown offers Deutschland (1) / Bundesländer
+       (16) / Regierungsbezirke (44) / Kreise und kreisfreie Städte
+       (490) as interchangeable levels for the SAME table. Selecting
+       Bundesländer gives Baden-Württemberg directly as ONE row — no
+       manual Kreis summing needed. THIS IS THE TABLE TO USE for the
+       headline BW-vs-France comparison (TABLE_CODE_LAND /
+       REGIONALVARIABLE_LAND="DLAND", both confirmed).
 
 3. Structural difference from France: Germany's Gewerbeanzeigen statistic
    does NOT cover "Freiberufler" (liberal professions — doctors, lawyers,
@@ -163,18 +167,35 @@ def set_credentials(username: str = None, password: str = None):
 
 STATISTIC_CODE = "52311"  # Gewerbeanzeigenstatistik (business registrations)
 
-# CONFIRMED live (2026-09-12) — Kreis-level table for this statistic.
-# Baden-Württemberg the STATE is not itself a Kreis, so a BW total from
-# this table means summing every Kreis whose AGS code starts "08"
-# yourself. Table 52311-01-04-4-B ("regionale Ebenen") may support
-# querying the Land level directly instead — check its own Merkmale
-# before assuming this is the only/best option.
+# CONFIRMED live (2026-09-12) — two tables exist for this statistic:
+#   TABLE_CODE_KREISE: Kreis (district) level only. Baden-Württemberg
+#     the STATE is not itself a Kreis, so a BW total from this table
+#     means summing every Kreis whose AGS code starts "08" yourself.
+#     Use this one for a within-BW district drilldown (e.g. isolating
+#     border-adjacent Kreise like Ortenau/Breisgau near Alsace).
+#   TABLE_CODE_LAND: "regionale Ebenen" — its regional dropdown was
+#     confirmed to offer Deutschland (1) / Bundesländer (16) /
+#     Regierungsbezirke (44) / Kreise und kreisfreie Städte (490) as
+#     interchangeable levels for the SAME table. Selecting Bundesländer
+#     gives Baden-Württemberg directly as ONE row — no manual Kreis
+#     summing needed. This is the one to use for the headline BW-vs-
+#     France comparison.
 TABLE_CODE_KREISE = "52311-01-04-4"
+TABLE_CODE_LAND = "52311-01-04-4-B"
+
+# CONFIRMED live: the Merkmal code for the Bundesländer regional level
+# (matches the dropdown option "Bundesländer (16)" on TABLE_CODE_LAND).
+REGIONALVARIABLE_LAND = "DLAND"
+REGIONALVARIABLE_KREISE = "KREISE"
 
 # CONFIRMED live: the classifying variable for registration REASON (not
 # sector — no sector variable exists on this statistic, see module
 # docstring). GEWM0 is the "genuine new creation" category to filter to
-# for a fair comparison with the French Sirene data.
+# for a fair comparison with the French Sirene data. NOTE: TABLE_CODE_LAND
+# also separately offers GEWNW3 ("Neuerrichtungen", a simpler 2-valued
+# Ja/Nein split) as an alternative to text-matching GEWNW1's 3-way
+# label — potentially cleaner to filter on once its exact values are
+# confirmed (not yet checked).
 REASON_VARIABLE = "GEWNW1"
 REASON_NEUERRICHTUNGEN = "GEWM0"   # genuine new creations
 REASON_ZUZUEGE = "GEWM1"           # relocations
@@ -206,9 +227,10 @@ def _auth_params(extra: dict) -> dict:
 def search_tables_for_statistic(statistic_code: str = STATISTIC_CODE):
     """
     List all GENESIS tables belonging to a given statistic (EVAS code).
-    Run this first and look for a table whose description mentions
-    "Kreise" (district level) and "Wirtschaftsabschnitte" (WZ sections) —
-    that's the one you want for year x sector x district data.
+    For 52311 this returns TABLE_CODE_KREISE (Kreis-level only) and
+    TABLE_CODE_LAND ("regionale Ebenen" — supports Bundesländer level
+    too, confirmed live) — see module docstring for which to use when.
+    There is NO sector/WZ variable on this statistic at any level.
     """
     url = BASE_URL + "catalogue/tables2statistic"
     params = _auth_params({
@@ -257,6 +279,7 @@ def inspect_table_metadata(table_code: str):
 def fetch_and_parse_table(
     table_code: str,
     regional_key: str = REGIONAL_KEY,
+    regionalvariable: str = REGIONALVARIABLE_LAND,
     start_year: int = START_YEAR,
     end_year: int = END_YEAR,
 ) -> pd.DataFrame:
@@ -264,6 +287,13 @@ def fetch_and_parse_table(
     Download a table in Flat-File-CSV (ffcsv) format and return it as a
     tidy pandas DataFrame. GENESIS returns ffcsv responses zipped, so we
     unzip in-memory before parsing.
+
+    regionalvariable defaults to REGIONALVARIABLE_LAND ("DLAND" —
+    Bundesländer level, confirmed live to work on TABLE_CODE_LAND) so
+    regional_key (Baden-Württemberg's AGS code) resolves directly to one
+    row. Pass regionalvariable=REGIONALVARIABLE_KREISE (with
+    table_code=TABLE_CODE_KREISE and a specific Kreis's AGS code as
+    regional_key) instead for a within-BW district drilldown.
     """
     url = BASE_URL + "data/tablefile"
     params = _auth_params({
@@ -273,7 +303,7 @@ def fetch_and_parse_table(
         "compress": "true",
         "startyear": start_year,
         "endyear": end_year,
-        "regionalvariable": "KREISE",   # confirm via inspect_table_metadata()
+        "regionalvariable": regionalvariable,
         "regionalkey": regional_key,
         "language": "de",
     })
@@ -414,15 +444,17 @@ def plot_reason_totals(df: pd.DataFrame, output_path: str = "outputs/charts/bw_r
 # Convenience: run steps B+C+charts together once you know the table code
 # ---------------------------------------------------------------------------
 
-def run_all(table_code: str = TABLE_CODE_KREISE, regional_key: str = REGIONAL_KEY):
+def run_all(table_code: str = TABLE_CODE_LAND, regional_key: str = REGIONAL_KEY,
+            regionalvariable: str = REGIONALVARIABLE_LAND):
     """
     Once you've confirmed the column names tidy_dataframe() expects
     (via inspect_table_metadata() + a first fetch_and_parse_table()
     call), run this to fetch, tidy, save, and chart everything in one
-    go. Defaults to the confirmed Kreis-level table
-    (TABLE_CODE_KREISE) — pass a different code (e.g. the
-    "regionale Ebenen" table) if that turns out to be the better choice
-    for a direct Baden-Württemberg total.
+    go. Defaults to TABLE_CODE_LAND at the Bundesländer level — gives
+    Baden-Württemberg as one row directly (confirmed live). Pass
+    table_code=TABLE_CODE_KREISE, regionalvariable=REGIONALVARIABLE_KREISE,
+    and a specific Kreis's AGS code instead for a within-BW district
+    drilldown.
 
         bw.run_all()
     """
@@ -430,7 +462,7 @@ def run_all(table_code: str = TABLE_CODE_KREISE, regional_key: str = REGIONAL_KE
     inspect_table_metadata(table_code)
 
     print("\nFetching and tidying data...")
-    df_raw = fetch_and_parse_table(table_code, regional_key=regional_key)
+    df_raw = fetch_and_parse_table(table_code, regional_key=regional_key, regionalvariable=regionalvariable)
     df = tidy_dataframe(df_raw)  # filtered to genuine new creations (Neuerrichtungen) by default
     df_by_reason = tidy_dataframe(df_raw, filter_to_neuerrichtungen=False)
 
