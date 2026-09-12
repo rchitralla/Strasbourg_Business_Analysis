@@ -134,7 +134,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config.regions import GERMAN_REGIONS, MIN_YEAR, MAX_YEAR
-from src.common.plotting import new_figure, save, PRIMARY_COLOR, BRAND_COLORMAP
+from src.common.plotting import new_figure, save, PRIMARY_COLOR, SECONDARY_COLOR, BRAND_COLORMAP
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -510,6 +510,71 @@ def plot_reason_totals(df: pd.DataFrame, output_path: str = "outputs/charts/bw_r
     ax.set_title("Total Business Registrations in Baden-Württemberg by Reason (All Years)", fontsize=15, pad=12)
     ax.set_xlabel("Number of registrations")
     save(fig, output_path)
+
+
+# Population figures from the user-provided "Baden-Württemberg Brief"
+# slide (2026-09-12) — NOT from a live API. Cite/update this constant if
+# a more current or authoritative population source is used later.
+REGBEZ_POPULATION_GROUPS = {
+    "Stuttgart + Karlsruhe": 7_000_000,
+    "Freiburg + Tübingen": 4_150_000,
+}
+REGBEZ_TO_GROUP = {
+    "Stuttgart": "Stuttgart + Karlsruhe",
+    "Karlsruhe": "Stuttgart + Karlsruhe",
+    "Freiburg": "Freiburg + Tübingen",
+    "Tübingen": "Freiburg + Tübingen",
+}
+
+
+def plot_regbez_border_comparison(
+    combined_df: pd.DataFrame,
+    output_path: str = "outputs/charts/bw_regbez_border_comparison.png",
+) -> pd.DataFrame:
+    """
+    Compares business-creation RATE (per 1,000 residents), not raw
+    volume, between the two Regierungsbezirke bordering Alsace/
+    Switzerland (Freiburg + Tübingen) and the rest of Baden-Württemberg
+    (Stuttgart + Karlsruhe) — the population-normalized version of the
+    finding confirmed live (2026-09-12): raw volume differs ~1.7x
+    (reflecting the population gap alone), but the per-capita rate is
+    nearly identical (~7.0 vs ~6.9-7.0 per 1,000 residents for
+    2023-2024).
+
+    combined_df: concat of tidy_dataframe() results per Regierungsbezirk,
+    each assigned a "regierungsbezirk" column (Stuttgart/Karlsruhe/
+    Freiburg/Tübingen) — see the notebook snippet that builds this.
+
+    Returns the grouped (year, group, count, population, per_1000)
+    DataFrame used for the chart, for direct inspection/citation.
+    """
+    df = combined_df.copy()
+    df["group"] = df["regierungsbezirk"].map(REGBEZ_TO_GROUP)
+
+    unmapped = df[df["group"].isna()]
+    if not unmapped.empty:
+        print(f"WARNING: {len(unmapped)} row(s) with an unrecognized "
+              f"regierungsbezirk value, excluded from this chart: "
+              f"{sorted(unmapped['regierungsbezirk'].unique())}")
+        df = df.dropna(subset=["group"])
+
+    grouped = df.groupby(["year", "group"])["count"].sum().reset_index()
+    grouped["population"] = grouped["group"].map(REGBEZ_POPULATION_GROUPS)
+    grouped["per_1000"] = grouped["count"] / grouped["population"] * 1000
+
+    pivot = grouped.pivot_table(index="year", columns="group", values="per_1000")
+    colors = [SECONDARY_COLOR, PRIMARY_COLOR][: len(pivot.columns)]
+
+    fig, ax = new_figure()
+    pivot.plot(kind="bar", ax=ax, color=colors, width=0.8)
+    ax.set_title("New Business Creations per 1,000 Residents — Border vs. Interior Baden-Württemberg",
+                 fontsize=14, pad=12)
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Neuerrichtungen per 1,000 residents")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=9, title="Region group")
+    save(fig, output_path)
+
+    return grouped
 
 
 # ---------------------------------------------------------------------------
