@@ -469,6 +469,149 @@ def collect_all_departments(min_year: int, max_year: int, resume: bool = True) -
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def fetch_yearly_total(query_extra: str, year: int) -> int:
+    """
+    Returns header.total for one year's query WITHOUT paginating through
+    the underlying records (nombre=1) — much cheaper than
+    fetch_establishments() when only a COUNT is needed. This is what
+    makes a France-wide national total feasible at all: crawling every
+    établissement in the country the way collect_all_departments() does
+    per department would be enormous and isn't needed just for a
+    headline comparison number.
+
+    query_extra is ANDed with the year's date-range filter. Pass "" for
+    no additional filter (whole of France), or e.g.
+    "codeCommuneEtablissement:67*" to scope to one department — used by
+    verify_yearly_total_against_cache() below to sanity-check this
+    approach against already-known real counts before trusting it
+    nationally.
+    """
+    query = f"dateCreationEtablissement:[{year}-01-01 TO {year}-12-31]"
+    if query_extra:
+        query = f"{query_extra} AND {query}"
+    params = {"q": query, "curseur": "*", "nombre": 1}
+    response = _get_with_retry(SEARCH_ENDPOINT, params, _headers(), timeout=30)
+    if response.status_code != 200:
+        raise RuntimeError(f"HTTP {response.status_code} for year {year}: {response.text[:500]}")
+    return response.json().get("header", {}).get("total")
+
+
+def verify_yearly_total_against_cache(dept_code: str, year: int):
+    """
+    UNVERIFIED ASSUMPTION this checks before it gets relied on for the
+    France-wide total: that header.total (from a nombre=1 request)
+    reports the TRUE total match count, independent of page size — not
+    yet confirmed against a real response for this v3.11 endpoint.
+
+    Cross-checks fetch_yearly_total() for one already-cached department
+    against the real row count in that department's cached CSV (built by
+    fetch_establishments(), which paginates through every actual
+    record — the ground truth). Run this once, for a department you've
+    already fetched via collect_all_departments(), BEFORE trusting
+    fetch_national_yearly_totals() — a France-wide total can't be
+    cross-checked any other way, so this department-level check is the
+    only verification available.
+    """
+    import pandas as pd
+    from config.regions import FRENCH_DEPARTMENTS
+
+    csv_path = _department_csv_path(dept_code)
+    if not Path(csv_path).exists():
+        print(f"No cached CSV at {csv_path} — fetch this department first via collect_all_departments().")
+        return
+
+    cached_df = pd.read_csv(csv_path)
+    cached_count = int(cached_df.loc[cached_df["year"] == year, "count"].sum())
+    header_total = fetch_yearly_total(f"codeCommuneEtablissement:{dept_code}*", year)
+
+    dept = next((d for d in FRENCH_DEPARTMENTS.values() if d.insee_code == dept_code), None)
+    dept_name = dept.name if dept else dept_code
+    status = "OK" if cached_count == header_total else "MISMATCH"
+    print(f"{dept_name} {year}: cached (paginated, ground-truth) count = {cached_count}, "
+          f"header.total (nombre=1) = {header_total} -> {status}")
+    if status == "MISMATCH":
+        print("  Do not trust fetch_national_yearly_totals() until this is resolved — "
+              "header.total may not mean what this module assumes.")
+
+
+def fetch_national_yearly_totals(min_year: int, max_year: int) -> "pd.DataFrame":
+    """
+    France-wide établissement creation totals per year, via
+    fetch_yearly_total() (header.total, not a full crawl). Run
+    verify_yearly_total_against_cache() first — see its docstring for
+    why this can't be self-verified any other way.
+
+    Returns a (year, region, count) DataFrame with region fixed to
+    "France (national)" — matching REGION_COLORS' key in
+    src/common/plotting.py, and the shape collect_all_departments()
+    produces, so the two concat() directly for a combined chart.
+    """
+    import pandas as pd
+
+    rows = []
+    for year in range(min_year, max_year + 1):
+        total = fetch_yearly_total("", year)
+        print(f"  {year}: {total}")
+        rows.append({"year": year, "region": "France (national)", "count": total})
+        time.sleep(SECONDS_BETWEEN_REQUESTS)
+    return pd.DataFrame(rows)
+
+
+def run_national(min_year: int = 2015, max_year: int = 2026):
+    """
+    Fetch the France-wide yearly totals and combine them with the
+    already-fetched department-level data (reads collect_all_departments()'s
+    cached per-department CSVs — does NOT re-fetch departments) into one
+    (year, region, count) DataFrame, then chart Bas-Rhin/Haut-Rhin/
+    Moselle vs. France (national) together.
+
+    Run collect_all_departments() (or run_all()) first if you haven't
+    already, and verify_yearly_total_against_cache() before this, to
+    confirm header.total is trustworthy.
+    """
+    from pathlib import Path as _Path
+    import pandas as pd
+    from config.regions import FRENCH_DEPARTMENTS
+    from src.common.plotting import grouped_region_bar
+
+    dept_frames = []
+    for dept in FRENCH_DEPARTMENTS.values():
+        csv_path = _department_csv_path(dept.insee_code)
+        if not _Path(csv_path).exists():
+            print(f"WARNING: no cached CSV for {dept.name} at {csv_path} — "
+                  f"run collect_all_departments() first. Skipping this department.")
+            continue
+        dept_df = pd.read_csv(csv_path)
+        yearly = dept_df.groupby("year")["count"].sum().reset_index()
+        yearly["region"] = dept.name
+        dept_frames.append(yearly[["year", "region", "count"]])
+
+    print(f"Fetching France-wide national totals, {min_year}-{max_year}...")
+    national_df = fetch_national_yearly_totals(min_year, max_year)
+
+    combined = pd.concat(dept_frames + [national_df], ignore_index=True)
+
+    csv_path = "data/processed/france_creations_by_year_dept_vs_national.csv"
+    _Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(csv_path, index=False)
+    print(f"Tidy data saved to: {csv_path}")
+
+    grouped_region_bar(
+        combined, value_col="count",
+        title="New Establishment Creations: Bas-Rhin/Haut-Rhin/Moselle vs. France (national)",
+        ylabel="Number of new establishments",
+        output_path="outputs/charts/france_creations_dept_vs_national.png",
+    )
+    print("\nNOTE: France's national total (~600k+/year) will dwarf any single "
+          "department (~a few thousand/year) on a shared raw-count axis — the "
+          "department bars will be barely visible next to it. For the actual "
+          "slide, consider a per-capita rate (creations per 1,000 residents,"
+          " same normalization already used for the BW Regierungsbezirk "
+          "comparison) or showing each department's count as a % of the "
+          "national total, rather than raw counts side by side.")
+    return combined
+
+
 def run_all(min_year: int = 2015, max_year: int = 2026):
     """
     Full pipeline: fetch all 3 departments, save tidy CSV, plot the
