@@ -194,6 +194,30 @@ def tidy_dataframe(df_raw: pd.DataFrame, event: str = EVENT_CREATIONS) -> pd.Dat
     df = df.dropna(subset=["year", "count"])
     df["year"] = df["year"].astype(int)
 
+    # CONFIRMED live (2026-09-14): GENESIS includes one grand-total
+    # "Insgesamt" pseudo-row per (year, region) for this event — the sum
+    # across ALL WZ08ABS sectors, with sector_code left blank/NaN (real
+    # values seen: BW 2021=33418, 2022=31744, 2023=36700). This is NOT a
+    # sector of its own — folding it into the per-sector breakdown (the
+    # earlier fallback-to-German-label behavior did exactly this, via a
+    # literal "Insgesamt" bucket) would roughly double the true total,
+    # the same double-counting shape as the GEWNW3/GEWNW5 risk in
+    # germany_registrations.py. Split it off here and use it as a
+    # cross-check on the real per-sector rows instead of discarding it
+    # silently.
+    total_rows = df[df["sector_code"].isna()]
+    df = df[df["sector_code"].notna()].copy()
+
+    if not total_rows.empty:
+        summed_by_year = df.groupby("year")["count"].sum()
+        for _, row in total_rows.iterrows():
+            year = row["year"]
+            reported_total = row["count"]
+            summed = summed_by_year.get(year, 0)
+            status = "OK" if abs(summed - reported_total) <= 1 else "MISMATCH"
+            print(f"Cross-check {year}: sum of per-sector {event} = {summed:.0f}, "
+                  f"GENESIS-reported '{row['sector_label_de']}' total = {reported_total:.0f} -> {status}")
+
     df["sector"] = df["sector_code"].map(WZ08_LABELS)
     unmapped = sorted(df.loc[df["sector"].isna(), "sector_code"].unique())
     if unmapped:
