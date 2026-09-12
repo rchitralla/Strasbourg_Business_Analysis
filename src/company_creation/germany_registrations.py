@@ -209,15 +209,29 @@ START_YEAR = MIN_YEAR
 END_YEAR = MAX_YEAR
 
 
-def _auth_params(extra: dict) -> dict:
+def _auth_headers() -> dict:
     if not RGDB_USERNAME or not RGDB_PASSWORD:
         raise RuntimeError(
             "Credentials not set. Run bw.set_credentials() first "
             "(or bw.set_credentials(username=..., password=...))."
         )
-    params = {"username": RGDB_USERNAME, "password": RGDB_PASSWORD}
-    params.update(extra)
-    return params
+    return {"username": RGDB_USERNAME, "password": RGDB_PASSWORD}
+
+
+def _post(path: str, data: dict, timeout: int = 30):
+    """
+    CONFIRMED live (2026-09-12, via the GENESIS-Online Swagger UI at
+    regionalstatistik.de/genesisws/swagger-ui): every REST endpoint this
+    module uses (catalogue/*, metadata/*, data/*) is POST-only, with
+    username/password sent as HTTP HEADERS — NOT as URL query
+    parameters (the earlier GET-based version put credentials directly
+    in the URL, which is both why it 405'd and a real credential-
+    exposure risk via server/proxy access logs) — and every other
+    parameter (table name, language, year range, etc.) as an
+    application/x-www-form-urlencoded POST body.
+    """
+    url = BASE_URL + path
+    return requests.post(url, headers=_auth_headers(), data=data, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -232,13 +246,11 @@ def search_tables_for_statistic(statistic_code: str = STATISTIC_CODE):
     too, confirmed live) — see module docstring for which to use when.
     There is NO sector/WZ variable on this statistic at any level.
     """
-    url = BASE_URL + "catalogue/tables2statistic"
-    params = _auth_params({
+    response = _post("catalogue/tables2statistic", {
         "selection": statistic_code,
         "pagelength": 100,
         "language": "de",
     })
-    response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     payload = response.json()
 
@@ -263,9 +275,7 @@ def inspect_table_metadata(table_code: str):
     name (e.g. 'KREISE') and classifying variable codes before fetching
     the full dataset.
     """
-    url = BASE_URL + "metadata/table"
-    params = _auth_params({"name": table_code, "language": "de"})
-    response = requests.get(url, params=params, timeout=30)
+    response = _post("metadata/table", {"name": table_code, "language": "de"})
     response.raise_for_status()
     payload = response.json()
     print(payload.get("Object", payload))
@@ -295,8 +305,7 @@ def fetch_and_parse_table(
     table_code=TABLE_CODE_KREISE and a specific Kreis's AGS code as
     regional_key) instead for a within-BW district drilldown.
     """
-    url = BASE_URL + "data/tablefile"
-    params = _auth_params({
+    response = _post("data/tablefile", {
         "name": table_code,
         "area": "free",
         "format": "ffcsv",
@@ -306,9 +315,7 @@ def fetch_and_parse_table(
         "regionalvariable": regionalvariable,
         "regionalkey": regional_key,
         "language": "de",
-    })
-
-    response = requests.get(url, params=params, timeout=60)
+    }, timeout=60)
     response.raise_for_status()
 
     # GENESIS returns a zip archive containing one CSV file.
