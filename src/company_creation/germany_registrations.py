@@ -55,9 +55,11 @@ IMPORTANT CONTEXT:
 2. The relevant statistic is EVAS 52311 "Gewerbeanzeigenstatistik"
    (trade/business registration statistics).
 
-   CONFIRMED live (2026-09-12) — the classifying variable for
-   registration REASON is GEWNW1 ("Grund der Gewerbeanmeldung"), with
-   three values:
+   CONFIRMED live (2026-09-14, resolved after an all-years breakdown
+   query — see REASON_EXHAUSTIVE_CODES below for the full derivation)
+   — TABLE_CODE_LAND returns registration-REASON categories from two
+   classifying variables together (GEWNW3 and GEWNW5), plus an
+   unclassified grand-total row. The true disjoint partition is:
      - GEWM0 = Neuerrichtungen  -> genuine new business creations
                                    (closest match to INSEE's "créations
                                    d'entreprises" — but per the official
@@ -69,8 +71,11 @@ IMPORTANT CONTEXT:
      - GEWM1 = Zuzüge           -> relocation of an existing business
                                    into the area
      - GEWM2 = sonstige Anmeldung -> other registrations (incl. takeovers)
-   For a fair comparison with the French data, filter to GEWM0
-   ("Neuerrichtungen") specifically — see tidy_dataframe()'s
+   confirmed to sum EXACTLY to the grand total. A fourth category seen
+   in the raw data, GEWM3 "Betriebsgründungen", is a non-additive
+   subset of GEWM0 (not part of the partition) and is excluded by
+   tidy_dataframe(). For a fair comparison with the French data, filter
+   to GEWM0 ("Neuerrichtungen") specifically — see tidy_dataframe()'s
    filter_to_neuerrichtungen parameter.
 
    CONFIRMED live: there is NO Wirtschaftsabschnitt/WZ (economic sector)
@@ -191,23 +196,33 @@ REGIONALVARIABLE_KREISE = "KREISE"
 # CONFIRMED live: the classifying variable for registration REASON (not
 # sector — no sector variable exists on this statistic, see module
 # docstring). GEWM0 is the "genuine new creation" category to filter to
-# for a fair comparison with the French Sirene data. NOTE: TABLE_CODE_LAND
-# also separately offers GEWNW3 ("Neuerrichtungen", a simpler 2-valued
-# Ja/Nein split). SUPERSEDED — corrected below.
+# for a fair comparison with the French Sirene data.
 #
-# CORRECTION (2026-09-12, live fetch): TABLE_CODE_LAND actually returns
-# GEWNW5 ("Grund der Gewerbeanmeldung") as its default classifying
-# variable, NOT GEWNW1 — GEWNW1 was never seen in a real response and
-# this constant is kept only for reference/possible use with a
-# different table. Real confirmed values (from a live fetch):
-# "Neuerrichtungen", "Betriebsgründungen" (GEWNW3's categories) and
-# "Zuzüge", "sonstige Anmeldung" (GEWNW5's categories) all appeared
-# together — see tidy_dataframe()'s docstring for the unresolved
-# GEWNW3-vs-GEWNW5 double-counting risk this raises.
-REASON_VARIABLE = "GEWNW1"          # NOT confirmed on TABLE_CODE_LAND — see correction above
-REASON_NEUERRICHTUNGEN = "GEWM0"    # genuine new creations
-REASON_ZUZUEGE = "GEWM1"            # relocations
-REASON_SONSTIGE = "GEWM2"           # other (incl. takeovers)
+# RESOLVED (2026-09-14, via an all-years full-breakdown query) — the
+# GEWNW3-vs-GEWNW5 double-counting question flagged earlier is now
+# settled with real numbers. TABLE_CODE_LAND returns categories from
+# TWO classifying variables together in one flat result — GEWNW3 and
+# GEWNW5 — plus an unclassified grand-total row per year (blank
+# 2_variable_attribute_code). All-years BW totals confirmed live:
+#     GEWNW3 / GEWM0  "Neuerrichtungen"         =   807,267
+#     GEWNW3 / GEWM3  "Betriebsgründungen"      =   156,244
+#     GEWNW5 / GEWM1  "Zuzüge"                  =   124,827
+#     GEWNW5 / GEWM2  "sonstige Anmeldung"      =    81,868
+#     grand total (unclassified row, all years) = 1,013,962
+# GEWM0 + GEWM1 + GEWM2 = 1,013,962 — an EXACT match to the grand
+# total. That's the true disjoint, exhaustive partition of GEW011.
+# GEWM3 ("Betriebsgründungen") is NOT a fourth category: it's a
+# non-additive SUBSET of GEWM0 (a supplementary breakout of
+# company-type foundings within "Neuerrichtungen"). Summing it
+# alongside GEWM0/GEWM1/GEWM2 overstates the true total by ~15%.
+# tidy_dataframe() excludes GEWM3 from filter_to_neuerrichtungen=False's
+# breakdown accordingly — see its docstring.
+REASON_VARIABLE = "GEWNW1"          # legacy/unused on TABLE_CODE_LAND — kept for reference only
+REASON_NEUERRICHTUNGEN = "GEWM0"    # genuine new creations — part of the exhaustive partition
+REASON_BETRIEBSGRUENDUNGEN = "GEWM3"  # non-additive subset of GEWM0 — excluded from sums
+REASON_ZUZUEGE = "GEWM1"            # relocations — part of the exhaustive partition
+REASON_SONSTIGE = "GEWM2"           # other (incl. takeovers) — part of the exhaustive partition
+REASON_EXHAUSTIVE_CODES = {REASON_NEUERRICHTUNGEN, REASON_ZUZUEGE, REASON_SONSTIGE}
 
 # Default region: whole of Baden-Württemberg. See config/regions.py for
 # the individual Stadtkreise (Stuttgart, Karlsruhe, Freiburg, ...).
@@ -379,24 +394,18 @@ def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True,
     creations, the fair comparison point with French Sirene data) and
     drops the now-redundant "reason" column.
 
-    UNRESOLVED DATA-INTEGRITY RISK, confirmed via a live chart
-    (2026-09-12) — flag before trusting filter_to_neuerrichtungen=False
-    output: GEW011 has TWO SIBLING classifying variables, GEWNW3
-    ("Neuerrichtungen"/"Betriebsgründungen" — 2 values) and GEWNW5
-    ("Grund der Gewerbeanmeldung": "Zuzüge"/"sonstige Anmeldung" — 2
-    values), per inspect_table_metadata()'s output. A live fetch
-    returned BOTH pairs as if they were one flat 4-category partition.
-    If GEWNW3 and GEWNW5 are two INDEPENDENT, parallel classifications
-    of the SAME underlying registrations (each summing separately to
-    the true GEW011 total) rather than four genuinely disjoint
-    sub-categories, then summing across all four (as
-    filter_to_neuerrichtungen=False's caller currently does for
-    charting) roughly DOUBLES the true count. NOT YET VERIFIED either
-    way — check whether GEWNW3's two categories sum to ~the same total
-    as GEWNW5's two categories for a given year before trusting any
-    "by reason" breakdown chart. filter_to_neuerrichtungen=True is NOT
-    affected by this (it isolates one single category via text-match,
-    it doesn't sum across the risky combination).
+    RESOLVED (2026-09-14, via an all-years full-breakdown query — see
+    REASON_EXHAUSTIVE_CODES above for the real numbers): GEW011 returns
+    categories from TWO classifying variables together, GEWNW3
+    (Neuerrichtungen/Betriebsgründungen) and GEWNW5 (Zuzüge/sonstige
+    Anmeldung), plus an unclassified grand-total row per year. The true
+    disjoint partition is GEWM0 + GEWM1 + GEWM2 (confirmed to sum
+    EXACTLY to the grand total); GEWM3 ("Betriebsgründungen") is a
+    non-additive subset of GEWM0, not a fourth category, and is dropped
+    from filter_to_neuerrichtungen=False's output below to avoid
+    overstating the total by ~15%. filter_to_neuerrichtungen=True was
+    never affected (its text match on "Neuerrichtung" never matched
+    "Betriebsgründungen").
 
     CONFIRMED live (2026-09-12) — the real ffcsv column names for
     TABLE_CODE_LAND are a "long" format, quite different from earlier
@@ -417,6 +426,7 @@ def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True,
     """
     YEAR_COL = "time"
     REGION_COL = "1_variable_attribute_label"
+    REASON_CODE_COL = "2_variable_attribute_code"
     REASON_COL = "2_variable_attribute_label"
     VALUE_COL = "value"
     MEASURE_COL = "value_variable_code"
@@ -424,16 +434,21 @@ def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True,
     if MEASURE_COL in df_raw.columns:
         df_raw = df_raw[df_raw[MEASURE_COL] == measure]
 
-    missing = [c for c in (YEAR_COL, REGION_COL, REASON_COL, VALUE_COL) if c not in df_raw.columns]
+    missing = [c for c in (YEAR_COL, REGION_COL, REASON_CODE_COL, REASON_COL, VALUE_COL) if c not in df_raw.columns]
     if missing:
         raise KeyError(
             f"Expected column(s) {missing} not found. "
             f"Available columns: {list(df_raw.columns)}. "
-            "Update YEAR_COL/REGION_COL/REASON_COL/VALUE_COL in tidy_dataframe()."
+            "Update YEAR_COL/REGION_COL/REASON_CODE_COL/REASON_COL/VALUE_COL in tidy_dataframe()."
         )
 
-    df = df_raw[[YEAR_COL, REGION_COL, REASON_COL, VALUE_COL]].copy()
-    df.columns = ["year", "region", "reason", "count"]
+    # CONFIRMED live (2026-09-14): drop the unclassified grand-total row
+    # (blank reason code) — it's the true GEW011 total, reconstructible
+    # as GEWM0+GEWM1+GEWM2, not a category of its own.
+    df_raw = df_raw[df_raw[REASON_CODE_COL].notna()]
+
+    df = df_raw[[YEAR_COL, REGION_COL, REASON_CODE_COL, REASON_COL, VALUE_COL]].copy()
+    df.columns = ["year", "region", "reason_code", "reason", "count"]
     df["year"] = pd.to_numeric(df["year"], errors="coerce")
     df["count"] = pd.to_numeric(df["count"], errors="coerce")
     df = df.dropna(subset=["year", "count"])
@@ -441,18 +456,19 @@ def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True,
     df = df.sort_values(["year", "region", "reason"]).reset_index(drop=True)
 
     if not filter_to_neuerrichtungen:
-        return df
+        # CONFIRMED live (2026-09-14): GEWM3 ("Betriebsgründungen") is a
+        # non-additive subset of GEWM0 ("Neuerrichtungen"), not a fourth
+        # disjoint category — see REASON_EXHAUSTIVE_CODES above. Excluded
+        # here so the "by reason" breakdown sums to the true GEW011
+        # total instead of overstating it by ~15%.
+        excluded = df[df["reason_code"] == REASON_BETRIEBSGRUENDUNGEN]
+        if not excluded.empty:
+            print(f"NOTE: excluding {len(excluded)} 'Betriebsgründungen' (GEWM3) row(s) "
+                  f"from the reason breakdown — confirmed non-additive subset of "
+                  f"Neuerrichtungen (GEWM0), not a disjoint category.")
+        df = df[df["reason_code"] != REASON_BETRIEBSGRUENDUNGEN]
+        return df.drop(columns=["reason_code"]).reset_index(drop=True)
 
-    # CONFIRMED live (2026-09-12): TABLE_CODE_LAND's default classifying
-    # variable is GEWNW5, whose own categories may NOT include
-    # "Neuerrichtungen" at all (it looked like a 2-value split — Zuzüge/
-    # sonstige Anmeldung — with Neuerrichtungen tracked separately under
-    # the sibling variable GEWNW3 instead, per inspect_table_metadata()).
-    # If so, this text match will correctly find nothing — that is
-    # informative, not a bug — and Neuerrichtungen needs to be derived
-    # by SUBTRACTION (unclassified GEW011 total minus these categories)
-    # rather than filtered directly. Check the warning below's printed
-    # distinct values before concluding this is broken vs. expected.
     matches = df["reason"].str.contains("Neuerrichtung", case=False, na=False)
     if not matches.any():
         print(f"WARNING: no 'reason' value containing 'Neuerrichtung' found — "
@@ -461,7 +477,7 @@ def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True,
               f"string in tidy_dataframe() or pass filter_to_neuerrichtungen=False.")
         return df[matches]
 
-    return df[matches].drop(columns=["reason"]).reset_index(drop=True)
+    return df[matches].drop(columns=["reason_code", "reason"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -594,9 +610,8 @@ def run_all(table_code: str = TABLE_CODE_LAND, regional_key: str = REGIONAL_KEY,
     drilldown.
 
     Returns (df, df_by_reason, df_raw) — ALL THREE, not just the final
-    tidy df, so you can inspect intermediate results (e.g. check the
-    GEWNW3-vs-GEWNW5 double-counting risk documented in
-    tidy_dataframe()'s docstring) without needing to re-fetch:
+    tidy df, so you can inspect intermediate results without needing to
+    re-fetch:
 
         df, df_by_reason, df_raw = bw.run_all()
     """
@@ -618,8 +633,5 @@ def run_all(table_code: str = TABLE_CODE_LAND, regional_key: str = REGIONAL_KEY,
     plot_stacked_bar(df_by_reason)
     plot_reason_totals(df_by_reason)
     print("\nAll charts saved — ready to insert into PowerPoint.")
-    print("\nNOTE: df_by_reason may double-count across GEWNW3/GEWNW5 — "
-          "see tidy_dataframe()'s docstring before trusting the "
-          "'by reason' charts.")
 
     return df, df_by_reason, df_raw
