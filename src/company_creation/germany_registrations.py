@@ -336,21 +336,45 @@ def fetch_and_parse_table(
     return df
 
 
-def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True) -> pd.DataFrame:
+def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True,
+                    measure: str = "GEW011") -> pd.DataFrame:
     """
-    Reduce the raw ffcsv table to a tidy (year, reason, count) DataFrame
-    — NOTE: "reason" (registration reason: Neuerrichtungen/Zuzüge/
-    sonstige Anmeldung), NOT sector. This statistic has NO sector/WZ
-    classifying variable at all (confirmed live 2026-09-12 — see module
-    docstring) — an earlier version of this function assumed one existed
-    and called this column "sector", which was wrong.
+    Reduce the raw ffcsv table to a tidy (year, region, reason, count)
+    DataFrame — NOTE: "reason" (registration reason: Neuerrichtungen/
+    Zuzüge/sonstige Anmeldung/etc.), NOT sector. This statistic has NO
+    sector/WZ classifying variable at all (confirmed live 2026-09-12 —
+    see module docstring).
+
+    measure="GEW011" (default) filters to REGISTRATIONS only
+    (Gewerbeanmeldungen). A live chart built without this filter mixed
+    GEW011 (registrations) and GEW013 (deregistrations) into one stack
+    as if they were comparable "reasons" — they are opposite-direction
+    business events and must never be summed together. Pass
+    measure="GEW013" for deregistrations instead.
 
     filter_to_neuerrichtungen=True (default) additionally restricts the
-    result to REASON_NEUERRICHTUNGEN only (genuine new creations, the
-    fair comparison point with French Sirene data) and drops the
-    now-redundant "reason" column. Pass False to keep all three reason
-    categories broken out, e.g. to chart Neuerrichtungen vs. Zuzüge vs.
-    sonstige Anmeldung directly.
+    result to the "Neuerrichtungen" category only (genuine new
+    creations, the fair comparison point with French Sirene data) and
+    drops the now-redundant "reason" column.
+
+    UNRESOLVED DATA-INTEGRITY RISK, confirmed via a live chart
+    (2026-09-12) — flag before trusting filter_to_neuerrichtungen=False
+    output: GEW011 has TWO SIBLING classifying variables, GEWNW3
+    ("Neuerrichtungen"/"Betriebsgründungen" — 2 values) and GEWNW5
+    ("Grund der Gewerbeanmeldung": "Zuzüge"/"sonstige Anmeldung" — 2
+    values), per inspect_table_metadata()'s output. A live fetch
+    returned BOTH pairs as if they were one flat 4-category partition.
+    If GEWNW3 and GEWNW5 are two INDEPENDENT, parallel classifications
+    of the SAME underlying registrations (each summing separately to
+    the true GEW011 total) rather than four genuinely disjoint
+    sub-categories, then summing across all four (as
+    filter_to_neuerrichtungen=False's caller currently does for
+    charting) roughly DOUBLES the true count. NOT YET VERIFIED either
+    way — check whether GEWNW3's two categories sum to ~the same total
+    as GEWNW5's two categories for a given year before trusting any
+    "by reason" breakdown chart. filter_to_neuerrichtungen=True is NOT
+    affected by this (it isolates one single category via text-match,
+    it doesn't sum across the risky combination).
 
     CONFIRMED live (2026-09-12) — the real ffcsv column names for
     TABLE_CODE_LAND are a "long" format, quite different from earlier
@@ -360,30 +384,23 @@ def tidy_dataframe(df_raw: pd.DataFrame, filter_to_neuerrichtungen: bool = True)
                                       "DLAND"/"Bundesländer")
       1_variable_attribute_label  -> the regional variable's VALUE for
                                       this row (e.g. "Baden-Württemberg")
-      2_variable_code/_label      -> the classifying variable's NAME —
-                                      CONFIRMED to be GEWNW5 ("Grund der
-                                      Gewerbeanmeldung") by default, NOT
-                                      GEWNW1 as originally assumed
+      2_variable_code/_label      -> the classifying variable's NAME
+                                      (GEWNW3 or GEWNW5, both seen)
       2_variable_attribute_label  -> the classifying variable's VALUE
-                                      (e.g. "Zuzüge", "sonstige Anmeldung")
+                                      (e.g. "Neuerrichtungen", "Zuzüge")
       value                       -> the count
-      value_variable_code/_label  -> which measure this is (e.g. "GEW011")
-
-    IMPORTANT: GEWNW5 (the classifying variable this table actually
-    returns) may have only 2 categories per the live table-builder UI —
-    possibly Zuzüge/sonstige Anmeldung WITHOUT a "Neuerrichtungen" value
-    of its own (that may live under the separate GEWNW3 variable
-    instead, seen as a sibling in inspect_table_metadata()'s output).
-    If so, filter_to_neuerrichtungen can't work by direct text-matching
-    here — Neuerrichtungen would need to be derived by SUBTRACTION
-    (unclassified GEW011 total minus the GEWNW5 categories) instead.
-    Check df_raw["2_variable_attribute_label"].unique() before trusting
-    the filter below.
+      value_variable_code/_label  -> which measure this is (GEW011 or
+                                      GEW013 — CONFIRMED both appear
+                                      together if not filtered)
     """
     YEAR_COL = "time"
     REGION_COL = "1_variable_attribute_label"
     REASON_COL = "2_variable_attribute_label"
     VALUE_COL = "value"
+    MEASURE_COL = "value_variable_code"
+
+    if MEASURE_COL in df_raw.columns:
+        df_raw = df_raw[df_raw[MEASURE_COL] == measure]
 
     missing = [c for c in (YEAR_COL, REGION_COL, REASON_COL, VALUE_COL) if c not in df_raw.columns]
     if missing:
@@ -489,7 +506,12 @@ def run_all(table_code: str = TABLE_CODE_LAND, regional_key: str = REGIONAL_KEY,
     and a specific Kreis's AGS code instead for a within-BW district
     drilldown.
 
-        bw.run_all()
+    Returns (df, df_by_reason, df_raw) — ALL THREE, not just the final
+    tidy df, so you can inspect intermediate results (e.g. check the
+    GEWNW3-vs-GEWNW5 double-counting risk documented in
+    tidy_dataframe()'s docstring) without needing to re-fetch:
+
+        df, df_by_reason, df_raw = bw.run_all()
     """
     print("Inspecting table metadata...")
     inspect_table_metadata(table_code)
@@ -509,5 +531,8 @@ def run_all(table_code: str = TABLE_CODE_LAND, regional_key: str = REGIONAL_KEY,
     plot_stacked_bar(df_by_reason)
     plot_reason_totals(df_by_reason)
     print("\nAll charts saved — ready to insert into PowerPoint.")
+    print("\nNOTE: df_by_reason may double-count across GEWNW3/GEWNW5 — "
+          "see tidy_dataframe()'s docstring before trusting the "
+          "'by reason' charts.")
 
-    return df
+    return df, df_by_reason, df_raw
