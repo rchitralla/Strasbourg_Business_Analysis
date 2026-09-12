@@ -118,22 +118,44 @@ _API_KEY = None
 def _get_with_retry(url, params, headers, timeout):
     """
     Wraps requests.get() with retries for transient network errors
-    (DNS resolution blips, timeouts, connection resets) — a long
-    cursor-pagination run (potentially hundreds of requests over 15-30+
-    minutes) will otherwise die on a single momentary network hiccup
-    and lose everything fetched so far.
+    (DNS resolution blips, timeouts, connection resets) AND HTTP 429
+    (rate limited) responses.
+
+    CONFIRMED live (2026-09-14): a long Strasbourg fetch (SECONDS_
+    BETWEEN_REQUESTS already paces requests under the advertised 30
+    req/min limit) still died on a single HTTP 429 at 8,025/10,000
+    records, because this function previously only retried on request
+    EXCEPTIONS (ConnectionError/Timeout) — a 429 comes back as a
+    normal, non-exception HTTP response, so it fell straight through
+    to the caller and aborted the whole fetch. A long cursor-pagination
+    run (potentially hundreds/thousands of requests over many minutes)
+    needs to ride out an occasional rate-limit response, not die on it.
     """
     last_exc = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            return requests.get(url, params=params, headers=headers, timeout=timeout)
+            response = requests.get(url, params=params, headers=headers, timeout=timeout)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
             last_exc = e
             wait = RETRY_BACKOFF_SECONDS * attempt
             print(f"  Network error ({e.__class__.__name__}), retrying in {wait}s "
                   f"(attempt {attempt}/{MAX_RETRIES})...")
             time.sleep(wait)
-    raise last_exc
+            continue
+
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            wait = float(retry_after) if retry_after else RETRY_BACKOFF_SECONDS * attempt
+            print(f"  HTTP 429 (rate limited), retrying in {wait}s "
+                  f"(attempt {attempt}/{MAX_RETRIES})...")
+            time.sleep(wait)
+            continue
+
+        return response
+
+    raise last_exc if last_exc is not None else RuntimeError(
+        f"Exceeded {MAX_RETRIES} retries — still getting HTTP 429 (rate limited)."
+    )
 
 
 def set_api_key(key: str = None):
