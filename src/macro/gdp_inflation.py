@@ -131,6 +131,13 @@ def search_statistics_by_prefix(prefix: str = CANDIDATE_EVAS_PREFIX):
     catalogue/statistics (the same catalogue/* family already confirmed
     working — POST — in germany_registrations.py), using GENESIS's
     wildcard selection syntax.
+
+    CONFIRMED live (2026-09-14, via the identical bug hit twice in
+    germany_registrations.search_tables_for_statistic()): this endpoint
+    family can return payload["List"] explicitly null (not merely
+    absent) alongside a Status.Content message. payload.get("List", [])
+    does not catch that — fixed the same way here before it crashes
+    this function too.
     """
     response = _post("catalogue/statistics", {
         "selection": f"{prefix}*",
@@ -139,7 +146,13 @@ def search_statistics_by_prefix(prefix: str = CANDIDATE_EVAS_PREFIX):
     })
     response.raise_for_status()
     payload = response.json()
-    stats = payload.get("List", [])
+    stats = payload.get("List") or []
+    if not stats:
+        status = payload.get("Status", {})
+        print(f"No statistics found starting with '{prefix}'. "
+              f"GENESIS says: {status.get('Content', '(no message)')} "
+              f"(Status.Code {status.get('Code', '?')}).")
+        return stats
     print(f"Found {len(stats)} statistic(s) starting with '{prefix}':\n")
     for s in stats:
         print(f"  {s.get('Code', '?'):10s} {s.get('Content', '?')}")

@@ -282,6 +282,17 @@ def search_tables_for_statistic(statistic_code: str = STATISTIC_CODE):
     TABLE_CODE_LAND ("regionale Ebenen" — supports Bundesländer level
     too, confirmed live) — see module docstring for which to use when.
     There is NO sector/WZ variable on this statistic at any level.
+
+    CONFIRMED live (2026-09-14, twice — for statistic 52111 and again
+    for 52411): this endpoint can return a well-formed HTTP 200 response
+    with payload["List"] explicitly null (not merely absent) alongside
+    a Status.Content message explaining why (e.g. "Es gibt keine Objekte
+    zum angegebenen Selektionskriterium"). payload.get("List", []) does
+    NOT catch this — a default only applies when the key is missing,
+    not when it's present but None — which crashed this function with
+    a bare TypeError on len(None) both times, hiding the actually
+    useful Status message. Handled explicitly below instead of guessed
+    around a second time.
     """
     response = _post("catalogue/tables2statistic", {
         "selection": statistic_code,
@@ -291,7 +302,13 @@ def search_tables_for_statistic(statistic_code: str = STATISTIC_CODE):
     response.raise_for_status()
     payload = response.json()
 
-    tables = payload.get("List", [])
+    tables = payload.get("List") or []
+    if not tables:
+        status = payload.get("Status", {})
+        print(f"No tables found for statistic {statistic_code}. "
+              f"GENESIS says: {status.get('Content', '(no message)')} "
+              f"(Status.Code {status.get('Code', '?')}).")
+        return tables
     print(f"Found {len(tables)} tables for statistic {statistic_code}:\n")
     for t in tables:
         code = t.get("Code", "?")
