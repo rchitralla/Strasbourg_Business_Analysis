@@ -90,10 +90,28 @@ def extract_row(record: dict) -> dict | None:
     Pull creation year, NAF section, legal form (nature_juridique) and
     associate count from a single company record. Returns None if
     essential fields are missing or malformed.
+
+    creation_date prefers the top-level (ENTERPRISE-level) date_creation
+    over siege.date_creation — flipped 2026-09-14 after a Sirene v3
+    comparison against the official INSEE "créations d'entreprises"
+    figure confirmed that counting by the ESTABLISHMENT's own creation
+    date overcounts by ~55-77% nationally (branch openings and
+    head-office relocations of already-existing enterprises both get a
+    fresh établissement-level creation date without the enterprise
+    itself being new — see sirene_v3_client.py's ENTERPRISE_ONLY_FILTER
+    comment for a real confirmed example record). This API
+    (recherche-entreprises.api.gouv.fr) is documented to expose the
+    enterprise's own creation date at the top level and the head
+    office's establishment-level date under siege — the previous
+    ordering here had that backwards. UNVERIFIED against a live
+    response from THIS specific API (only the analogous Sirene v3 field
+    has been confirmed) — if Strasbourg's creation counts shift
+    noticeably after this change, that's this fix taking effect, not a
+    new bug.
     """
     siege = record.get("siege", {}) or {}
 
-    creation_date = siege.get("date_creation") or record.get("date_creation")
+    creation_date = record.get("date_creation") or siege.get("date_creation")
     if not creation_date:
         return None
 
