@@ -76,12 +76,23 @@ def lookup_siren(siren: str) -> dict | None:
     Look up ONE SIREN. Returns None if not found or the request fails —
     callers should treat None as "no data available", not "error", since
     a genuinely deregistered/very old company may not resolve.
+
+    Filters to etablissementSiege:true — a SIREN with multiple
+    établissements (branches/secondary sites) would otherwise return an
+    arbitrary one via results[0], and activitePrincipaleEtablissement is
+    an ESTABLISHMENT-level field that can genuinely differ between a
+    company's sites (e.g. a HQ office vs. a warehouse). Without this
+    filter, "sector" here could silently reflect a random branch instead
+    of the head office — the same établissement-vs-enterprise ambiguity
+    already confirmed live to matter in sirene_v3_client.py (see
+    ENTERPRISE_ONLY_FILTER there), applied here before this module gets
+    used at volume rather than after finding it the hard way again.
     """
     # CONFIRMED live (2026-09-05): omitting `curseur` causes an HTTP 400
     # with an empty body on this endpoint — every other working call in
     # sirene_v3_client.py always includes it, even for a single-record
     # lookup. Not optional on this API version.
-    params = {"q": f"siren:{siren}", "curseur": "*", "nombre": 1}
+    params = {"q": f"siren:{siren} AND {sv3.ENTERPRISE_ONLY_FILTER}", "curseur": "*", "nombre": 1}
     response = sv3._get_with_retry(sv3.SEARCH_ENDPOINT, params, sv3._headers(), timeout=30)
     if response.status_code != 200:
         print(f"  lookup_siren({siren}) failed: HTTP {response.status_code}: {response.text[:200]}")

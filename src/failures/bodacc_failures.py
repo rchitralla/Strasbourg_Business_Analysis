@@ -162,18 +162,34 @@ def collect_all_departments(min_year: int, max_year: int) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def enrich_with_sector(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds naf_code/sector/legal_form_code/legal_form_label/denomination
+    columns by cross-referencing each row's SIREN against Sirene — there
+    is no sector code on a BODACC record itself (see module docstring).
+    Requires sv3.set_api_key() first. Expect this to take real time for
+    a busy department: src/common/sirene_lookup.py rate-limits to
+    ~2.1s/unique SIREN (progress is cached to disk every 20 lookups, so
+    an interrupted run can safely be re-run).
+
+        from src.company_creation import sirene_v3_client as sv3
+        sv3.set_api_key()
+        df = bf.collect_all_departments(2015, 2026)
+        df = bf.enrich_with_sector(df)
+    """
+    from src.common import sirene_lookup as sl
+    return sl.enrich_with_sector(df, siren_col="siren")
+
+
 # TODO (not yet implemented):
 #   1. Parse jugement_date_text (French month names, e.g. "10 décembre
 #      2009") into a real date — the notice's dateparution is when
 #      BODACC published it, which can lag the actual judgment date.
-#   2. Sector breakdown: cross-reference extract_siren() against Sirene
-#      (src/company_creation/sirene_v3_client.py) to get a NAF section -
-#      there is no sector code on the BODACC record itself.
-#   3. Failure RATE (vs. raw count) needs the active-company-stock
+#   2. Failure RATE (vs. raw count) needs the active-company-stock
 #      denominator per department/sector/year - not sourced yet.
-#   4. Expand NATURE_CLASSIFICATION as new jugement.nature values surface
+#   3. Expand NATURE_CLASSIFICATION as new jugement.nature values surface
 #      from real department-level data (only one value is confirmed so
 #      far - see module docstring).
-#   5. Baden-Württemberg side: Destatis/regionalstatistik.de
+#   4. Baden-Württemberg side: Destatis/regionalstatistik.de
 #      Insolvenzstatistik (EVAS 52411) - a completely separate API, not
 #      BODACC-related. Mirror germany_registrations.py's pattern.

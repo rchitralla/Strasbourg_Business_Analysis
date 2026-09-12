@@ -154,15 +154,33 @@ def build_summary(df: pd.DataFrame) -> pd.DataFrame:
     return summary.sort_values(["year", "department_name"])
 
 
+def enrich_with_sector(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds naf_code/sector/legal_form_code/legal_form_label/denomination
+    columns by cross-referencing each row's SIREN against Sirene —
+    activite_text on a BODACC record is free text, not a real NAF code
+    (see module docstring). Requires sv3.set_api_key() first. Expect
+    this to take real time for a busy department:
+    src/common/sirene_lookup.py rate-limits to ~2.1s/unique SIREN
+    (progress is cached to disk every 20 lookups, so an interrupted run
+    can safely be re-run).
+
+    The resulting legal_form_code/legal_form_label (from Sirene's
+    categorieJuridiqueUniteLegale) is the code-based counterpart to this
+    module's own legal_form_text (BODACC's free-text label) — use the
+    Sirene-derived columns for anything that needs to join against
+    sirene_v3_client's LEGAL_FORM_LABELS, since legal_form_text alone
+    isn't directly joinable.
+
+        from src.company_creation import sirene_v3_client as sv3
+        sv3.set_api_key()
+        df = sc.collect_all_departments(2015, 2026)
+        df = sc.enrich_with_sector(df)
+    """
+    from src.common import sirene_lookup as sl
+    return sl.enrich_with_sector(df, siren_col="siren")
+
+
 # TODO (not yet implemented):
-#   1. Sector: activite_text is free text, not a NAF code - cross-
-#      reference extract_siren() against Sirene
-#      (src/company_creation/sirene_v3_client.py) for a real NAF section
-#      if a sector breakdown of capital is needed.
-#   2. National average + Baden-Württemberg comparison (Handelsregister
+#   1. National average + Baden-Württemberg comparison (Handelsregister
 #      Stammkapital, per the Data Room brief) are not sourced yet.
-#   3. legal_form_text is currently free text from BODACC's own label
-#      (e.g. "Société par actions simplifiée") rather than the Sirene
-#      categorieJuridiqueUniteLegale code - fine for a capital-by-form
-#      breakdown, but not directly joinable to sirene_v3_client's
-#      LEGAL_FORM_LABELS without a text-matching step.
