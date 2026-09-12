@@ -193,17 +193,39 @@ REGIONALVARIABLE_KREISE = "KREISE"
 # docstring). GEWM0 is the "genuine new creation" category to filter to
 # for a fair comparison with the French Sirene data. NOTE: TABLE_CODE_LAND
 # also separately offers GEWNW3 ("Neuerrichtungen", a simpler 2-valued
-# Ja/Nein split) as an alternative to text-matching GEWNW1's 3-way
-# label — potentially cleaner to filter on once its exact values are
-# confirmed (not yet checked).
-REASON_VARIABLE = "GEWNW1"
-REASON_NEUERRICHTUNGEN = "GEWM0"   # genuine new creations
-REASON_ZUZUEGE = "GEWM1"           # relocations
-REASON_SONSTIGE = "GEWM2"          # other (incl. takeovers)
+# Ja/Nein split). SUPERSEDED — corrected below.
+#
+# CORRECTION (2026-09-12, live fetch): TABLE_CODE_LAND actually returns
+# GEWNW5 ("Grund der Gewerbeanmeldung") as its default classifying
+# variable, NOT GEWNW1 — GEWNW1 was never seen in a real response and
+# this constant is kept only for reference/possible use with a
+# different table. Real confirmed values (from a live fetch):
+# "Neuerrichtungen", "Betriebsgründungen" (GEWNW3's categories) and
+# "Zuzüge", "sonstige Anmeldung" (GEWNW5's categories) all appeared
+# together — see tidy_dataframe()'s docstring for the unresolved
+# GEWNW3-vs-GEWNW5 double-counting risk this raises.
+REASON_VARIABLE = "GEWNW1"          # NOT confirmed on TABLE_CODE_LAND — see correction above
+REASON_NEUERRICHTUNGEN = "GEWM0"    # genuine new creations
+REASON_ZUZUEGE = "GEWM1"            # relocations
+REASON_SONSTIGE = "GEWM2"           # other (incl. takeovers)
 
 # Default region: whole of Baden-Württemberg. See config/regions.py for
 # the individual Stadtkreise (Stuttgart, Karlsruhe, Freiburg, ...).
 REGIONAL_KEY = GERMAN_REGIONS["baden_wurttemberg"].ags_code
+
+# Sub-region drilldown: TABLE_CODE_LAND's regional dropdown also offers
+# "Regierungsbezirke (44)" — Baden-Württemberg's 4 Regierungsbezirke
+# match standard German AGS numbering (2-digit state code + 1-digit
+# district number). NOT YET CONFIRMED against a live response — verify
+# with e.g. fetch_and_parse_table(TABLE_CODE_LAND,
+# regionalvariable=REGIONALVARIABLE_REGBEZ, regional_key=REGBEZ_STUTTGART)
+# and check "1_variable_attribute_label" actually reads "Stuttgart"
+# before trusting these.
+REGIONALVARIABLE_REGBEZ = "REGBEZ"
+REGBEZ_STUTTGART = "081"
+REGBEZ_KARLSRUHE = "082"
+REGBEZ_FREIBURG = "083"
+REGBEZ_TUEBINGEN = "084"
 
 START_YEAR = MIN_YEAR
 END_YEAR = MAX_YEAR
