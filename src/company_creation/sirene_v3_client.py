@@ -497,6 +497,81 @@ def build_dataframe(records: list[dict], region_name: str) -> "pd.DataFrame":
     return df.sort_values(["year", "region", "sector"]).reset_index(drop=True)
 
 
+def extract_siren_sector_row(record: dict) -> dict | None:
+    """
+    Pulls SIREN + creation year + sector for one raw établissement
+    record — a raw PER-COMPANY lookup, distinct from build_dataframe()'s
+    (year, region, sector, legal_form) -> count aggregation, which
+    discards the individual SIREN entirely (same reasoning survival_rate.py's
+    module docstring gives for why "etat" needs a separate fetch too).
+    Reuses extract_row() for the year/sector derivation — including the
+    same NAFRev2-only section-mapping rule and "Unknown / unclassified"
+    bucketing — so the two never drift apart, then adds the one field
+    extract_row() doesn't keep.
+    """
+    row = extract_row(record)
+    if row is None:
+        return None
+    return {
+        "siren": record.get("siren"),
+        "year": row["year"],
+        "sector": row["sector"],
+    }
+
+
+def _siren_sector_cache_path(dept_code: str, min_year: int, max_year: int) -> str:
+    return f"data/processed/siren_sector_dept_{dept_code}_{min_year}_{max_year}.csv"
+
+
+def collect_siren_sector_all_departments(min_year: int, max_year: int, resume: bool = True) -> "pd.DataFrame":
+    """
+    Fetch + tidy (siren, year, sector, region) for every French
+    department in config.regions.FRENCH_DEPARTMENTS — a raw per-company
+    lookup table you can filter/join by SIREN (e.g. to pull up specific
+    "Unknown / unclassified" records on the Sirene public lookup site).
+
+    NOT reusable from collect_all_departments()'s cached CSVs — those are
+    pre-aggregated to counts and never kept the SIREN, so this means a
+    FRESH crawl even for a year range you've already fetched for the
+    sector-summary axis. Pass a narrow min_year/max_year for a cheap
+    pilot first. Requires set_api_key().
+    """
+    import pandas as pd
+    from pathlib import Path
+    from config.regions import FRENCH_DEPARTMENTS
+
+    Path("data/processed").mkdir(parents=True, exist_ok=True)
+    frames = []
+    for dept in FRENCH_DEPARTMENTS.values():
+        csv_path = _siren_sector_cache_path(dept.insee_code, min_year, max_year)
+        if resume and Path(csv_path).exists():
+            print(f"\n{dept.name}: already fetched, loading from {csv_path} (pass resume=False to re-fetch).")
+            frames.append(pd.read_csv(csv_path))
+            continue
+
+        print(f"\nFetching SIREN/year/sector for {dept.name} (dept code {dept.insee_code}), "
+              f"{min_year}-{max_year}...")
+        records, complete = fetch_establishments(dept.insee_code, min_year=min_year, max_year=max_year)
+        print(f"  Total records retrieved: {len(records)} (complete: {complete})")
+
+        rows = []
+        for record in records:
+            row = extract_siren_sector_row(record)
+            if row is not None:
+                row["region"] = dept.name
+                rows.append(row)
+        dept_df = pd.DataFrame(rows)
+
+        if complete:
+            dept_df.to_csv(csv_path, index=False)
+            print(f"  Saved: {csv_path}")
+        else:
+            print("  NOT caching — this department's fetch was incomplete. Re-run to retry.")
+        frames.append(dept_df)
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def _department_csv_path(dept_code: str) -> str:
     # "_enterprises" suffix (2026-09-14) deliberately changes the path
     # from the pre-fix version — old CSVs at the un-suffixed path were
