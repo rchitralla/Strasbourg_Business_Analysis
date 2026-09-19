@@ -240,12 +240,24 @@ def extract_row(record: dict) -> dict | None:
     except (ValueError, TypeError):
         year = None
 
+    # listepersonnes.personne.activite is a FREE-TEXT business-activity
+    # description — the only sector-ish signal on a BODACC record itself
+    # (see bodacc_client.py's module docstring: there is NO NAF/sector
+    # code here). Distinct from "commercant" (the company NAME) — a wine
+    # domaine is often named after a family/estate, not the word "vin",
+    # so filtering commercant alone would miss real matches. first_or_self()
+    # handles "personne" coming back as a single dict or a list of dicts.
+    listepersonnes = bc.parse_json_field(record.get("listepersonnes"))
+    personne = bc.first_or_self(listepersonnes.get("personne")) if listepersonnes else {}
+    activite = personne.get("activite")
+
     return {
         "year": year,
         "department_code": record.get("numerodepartement"),
         "department_name": record.get("departement_nom_officiel"),
         "siren": bc.extract_siren(record),
         "commercant": record.get("commercant"),
+        "activite": activite,
         "ville": record.get("ville"),
         "nature": nature,
         "nature_classification": _classify_nature(nature),  # "opening"/"conversion"/... or None if unrecognized
