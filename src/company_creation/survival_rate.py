@@ -43,6 +43,12 @@ Usage:
     df = surv.collect_all_departments(min_year=2018, max_year=2020)  # cheap pilot first
     df = surv.filter_business_entities(df)  # drop VAT-only/public-body/cooperative-union rows
     summary = surv.build_summary(df)
+
+    # optional: a period life table (age-indexed survival curve + hazard
+    # rate) instead of / alongside the raw calendar-year summary --
+    # see build_life_table()'s docstring for what this is and its limits
+    life_table = surv.build_life_table(summary)
+    surv.plot_life_table(life_table)
 """
 
 import sys
@@ -204,3 +210,141 @@ def build_summary(df: pd.DataFrame) -> pd.DataFrame:
     summary["other_status"] = summary["total"] - summary["active"] - summary["ceased"]
     summary["survival_rate"] = summary["active"] / summary["total"]
     return summary.sort_values(["year", "region"]).reset_index(drop=True)
+
+
+def build_life_table(summary: pd.DataFrame) -> pd.DataFrame:
+    """
+    Turns the cross-sectional cohort summary into an approximate
+    survival-by-age curve -- a "period life table" / synthetic-cohort
+    estimate, the practical substitute for a true Kaplan-Meier curve
+    when all you have is each cohort's CURRENT status rather than an
+    exact date of cessation per company (see module docstring).
+
+    Each row of `summary` is one (creation_year, region) cohort with
+    its own survival_rate, measured at THAT cohort's own age today
+    (age = current_year - creation_year). Splicing one age-point per
+    cohort together approximates S(age) for the region -- but this
+    splices DIFFERENT COHORTS at each age, not one cohort followed over
+    its own life, so it conflates a true age effect with any genuine
+    difference between cohorts (e.g. a cohort founded in a worse economic
+    year would look like "this age is riskier" even though age itself
+    changed nothing). State this explicitly if you present S(age) as a
+    survival curve -- it is the standard, named limitation of a period
+    life table versus a cohort life table, not a bug in this code.
+
+    Also NOTE this only covers whatever age range your cohorts happen to
+    span (e.g. ages 5-11 for creation years 2015-2021, fetched in
+    2026) -- it is a partial life table, not one starting from age 0,
+    and it says nothing about survival at ages outside that observed
+    range.
+
+    Adds two columns to a copy of `summary`:
+      age          = current_year - creation_year
+      hazard_rate  = the discrete hazard between this age and the next
+                     OLDER observed age in the same region:
+                     h = 1 - S(age_next)/S(age) -- "probability of
+                     failing between these two ages, given survival to
+                     the younger one." NaN for the oldest age per region
+                     (no older point to compare against). CAN come out
+                     negative if survival_rate happens to rise with age
+                     in the raw data -- that is a real signal that
+                     cohort-quality differences are swamping the age
+                     effect for that pair, not a bug -- report it as-is
+                     rather than clipping it to zero.
+    """
+    from datetime import date
+
+    if summary.empty:
+        return summary.copy()
+
+    current_year = date.today().year
+    table = summary.copy()
+    table["age"] = current_year - table["year"]
+    table = table.sort_values(["region", "age"]).reset_index(drop=True)
+    table["hazard_rate"] = None
+
+    for _, group in table.groupby("region"):
+        group = group.sort_values("age")
+        s = group["survival_rate"].values
+        idx = group.index
+        for i in range(len(s) - 1):
+            table.loc[idx[i], "hazard_rate"] = 1 - (s[i + 1] / s[i]) if s[i] else None
+
+    return table[["region", "year", "age", "total", "active", "ceased", "survival_rate", "hazard_rate"]]
+
+
+def plot_life_table(table: pd.DataFrame, output_path: str = "outputs/charts/survival_life_table.png"):
+    """
+    Two-panel chart: survival curve S(age) (step function, one line per
+    region) on top, discrete hazard rate h(age) on bottom. Same brand
+    dark theme used for the cohort-size/survival chart built earlier
+    this project. Read build_life_table()'s docstring for the
+    cohort-vs-age caveat before presenting this as a "true" survival
+    curve to an audience.
+    """
+    import matplotlib.pyplot as plt
+    from pathlib import Path as _Path
+
+    BG_COLOR = "#162B2B"
+    TEXT_COLOR = "#F5F5F0"
+    MUTED_TEXT = "#B9C4BE"
+    GRID_COLOR = "#2A413F"
+    REGION_COLORS = {
+        "Bas-Rhin": "#7FA087",
+        "Haut-Rhin": "#5B8FB9",
+        "Moselle": "#E0A458",
+    }
+
+    fig, (ax_surv, ax_haz) = plt.subplots(
+        2, 1, figsize=(9, 8), sharex=True, gridspec_kw={"height_ratios": [1, 1]}
+    )
+    fig.patch.set_facecolor(BG_COLOR)
+    for ax in (ax_surv, ax_haz):
+        ax.set_facecolor(BG_COLOR)
+
+    for region, color in REGION_COLORS.items():
+        sub = table[table["region"] == region].sort_values("age")
+        if sub.empty:
+            continue
+        ax_surv.step(sub["age"], sub["survival_rate"] * 100, where="post",
+                     color=color, linewidth=2, label=region)
+        ax_surv.plot(sub["age"], sub["survival_rate"] * 100, "o", color=color, markersize=5)
+
+        haz = sub.dropna(subset=["hazard_rate"])
+        if not haz.empty:
+            ax_haz.plot(haz["age"], haz["hazard_rate"].astype(float) * 100, marker="o",
+                        markersize=5, linewidth=2, color=color, label=region)
+
+    ax_surv.set_ylabel("Survival rate S(age) (%)", color=TEXT_COLOR)
+    ax_surv.set_title("Survival curve by age (synthetic cohort / period life table)",
+                       loc="left", fontsize=11, color=MUTED_TEXT)
+    ax_haz.axhline(0, color=GRID_COLOR, linewidth=1)
+    ax_haz.set_ylabel("Hazard rate (%)", color=TEXT_COLOR)
+    ax_haz.set_xlabel("Age (years since creation)", color=TEXT_COLOR)
+    ax_haz.set_title("Discrete hazard rate between observed ages", loc="left",
+                      fontsize=11, color=MUTED_TEXT)
+
+    for ax in (ax_surv, ax_haz):
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8, zorder=0)
+        ax.set_axisbelow(True)
+        ax.tick_params(colors=TEXT_COLOR)
+
+    fig.subplots_adjust(top=0.82, hspace=0.35)
+    fig.suptitle("Company survival by age — Alsace-Moselle", y=0.97, fontsize=13, color=TEXT_COLOR)
+
+    handles, labels = ax_surv.get_legend_handles_labels()
+    legend = fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False,
+                         bbox_to_anchor=(0.5, 0.90), fontsize=10)
+    for text in legend.get_texts():
+        text.set_color(TEXT_COLOR)
+
+    fig.text(0.5, 0.86,
+              "Synthetic-cohort estimate: each age point comes from a DIFFERENT cohort, not one cohort tracked over time",
+              ha="center", fontsize=8, style="italic", color=MUTED_TEXT)
+
+    _Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"Saved: {output_path}")
