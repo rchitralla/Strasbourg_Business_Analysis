@@ -481,7 +481,18 @@ def build_dataframe(records: list[dict], region_name: str) -> "pd.DataFrame":
     # groupby key above, since they're deterministic lookups.
     df["legal_form_label"] = df["legal_form"].map(LEGAL_FORM_LABELS)
     df["is_sole_shareholder"] = df["legal_form"].map(IS_SOLE_SHAREHOLDER_BY_CODE)
-    df["exclude_from_business_counts"] = df["legal_form"].map(EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE).fillna(False)
+    # .astype(bool) matters: for a legal_form code absent from
+    # EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE (most ordinary company forms
+    # are), .map() returns NaN, and a column mixing NaN with True/False
+    # comes out dtype=object even after .fillna(False) — Python bool is
+    # an int subclass, so `~` on an object-dtype column of True/False
+    # does integer bitwise-complement (~True == -2) instead of boolean
+    # negation, and pandas then misreads the result as column labels
+    # rather than a boolean mask. Confirmed live via build_clean_sector_
+    # dataset() below hitting exactly this on cached CSVs (2026-09-19).
+    df["exclude_from_business_counts"] = (
+        df["legal_form"].map(EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE).fillna(False).astype(bool)
+    )
     df["category"] = df["legal_form"].map(CATEGORY_BY_CODE).fillna("")
     return df.sort_values(["year", "region", "sector"]).reset_index(drop=True)
 
@@ -545,6 +556,105 @@ def collect_all_departments(min_year: int, max_year: int, resume: bool = True) -
         frames.append(dept_df)
 
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def build_clean_sector_dataset(min_year: int = None, max_year: int = None) -> "pd.DataFrame":
+    """
+    Rebuilds a clean (year, region, sector) creation-count table for
+    Bas-Rhin/Haut-Rhin/Moselle from the already-fetched, cached
+    per-department CSVs (data/processed/france_creations_sirene_v3_dept_
+    <code>_enterprises.csv) — NO API calls, so safe to re-run any time
+    data/manual/legal_form_category_review.csv changes (as it just did:
+    the four "union de sociétés coopératives" codes, 2026-09-19).
+
+    "Clean" means:
+      1. legal_form_label / category / exclude_from_business_counts are
+         RECOMPUTED from the CURRENT LEGAL_FORM_LABELS / CATEGORY_BY_CODE /
+         EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE dicts, never trusted from the
+         cached CSV — those columns were baked in at fetch time and go
+         stale whenever the manual review file is edited afterwards. The
+         raw categorieJuridiqueUniteLegale code itself (the "legal_form"
+         column) doesn't change, so this needs no re-fetch — only a
+         re-derivation.
+      2. Rows with exclude_from_business_counts == True (VAT-only
+         registrations, public bodies, indivisions, professional orders,
+         cooperative unions, etc.) are dropped, with a printed breakdown
+         by category so nothing silently disappears.
+      3. legal_form/legal_form_label/is_sole_shareholder/category
+         granularity is then summed away — this dataset answers "how many
+         genuine new companies by sector", not by legal form (B17/B18's
+         question, handled separately in summarize_b16_b17_b18.py).
+
+    Requires collect_all_departments() to have already been run at least
+    once (reads its cached CSVs). Pass min_year/max_year to narrow the
+    window; omit both for everything cached.
+    """
+    import pandas as pd
+    from pathlib import Path as _Path
+    from config.regions import FRENCH_DEPARTMENTS
+
+    frames = []
+    for dept in FRENCH_DEPARTMENTS.values():
+        csv_path = _department_csv_path(dept.insee_code)
+        if not _Path(csv_path).exists():
+            print(f"WARNING: no cached CSV for {dept.name} at {csv_path} — "
+                  f"run collect_all_departments() first. Skipping this department.")
+            continue
+        dept_df = pd.read_csv(csv_path, dtype={"legal_form": str})
+        frames.append(dept_df)
+
+    if not frames:
+        print("No cached department data found — run collect_all_departments() first.")
+        return pd.DataFrame()
+
+    df = pd.concat(frames, ignore_index=True)
+
+    if min_year is not None:
+        df = df[df["year"] >= min_year]
+    if max_year is not None:
+        df = df[df["year"] <= max_year]
+
+    # Recompute — never trust the cached copies of these three columns.
+    # .astype(bool) matters here: see the identical comment in
+    # build_dataframe() above — without it this column can come back
+    # dtype=object and silently break the `~` negation below.
+    df["legal_form_label"] = df["legal_form"].map(LEGAL_FORM_LABELS)
+    df["category"] = df["legal_form"].map(CATEGORY_BY_CODE).fillna("")
+    df["exclude_from_business_counts"] = (
+        df["legal_form"].map(EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE).fillna(False).astype(bool)
+    )
+
+    excluded = df[df["exclude_from_business_counts"]]
+    if not excluded.empty:
+        dropped_total = int(excluded["count"].sum())
+        breakdown = excluded.groupby("category")["count"].sum().sort_values(ascending=False)
+        print(f"Dropping {dropped_total} record(s) with a non-business legal form:")
+        for category, n in breakdown.items():
+            print(f"  {category or '(uncategorized)'}: {n}")
+
+    clean = df[~df["exclude_from_business_counts"]]
+
+    unclassified = clean[clean["sector"].str.startswith("Unknown / unclassified")]
+    if not unclassified.empty:
+        print(f"\nNOTE: {int(unclassified['count'].sum())} record(s) still fall into an "
+              f"'Unknown / unclassified' sector bucket (old NAFRev1/NAF25 nomenclature, "
+              f"or a missing NAF code) — see fetch_establishments()'s own note on this "
+              f"before treating the sector breakdown as complete.")
+
+    sector_summary = (
+        clean.groupby(["year", "region", "sector"])["count"]
+        .sum()
+        .reset_index()
+        .sort_values(["year", "region", "sector"])
+        .reset_index(drop=True)
+    )
+
+    out_path = "data/processed/france_creations_by_sector_clean.csv"
+    _Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    sector_summary.to_csv(out_path, index=False)
+    print(f"\nClean sector dataset saved to: {out_path} ({len(sector_summary)} rows)")
+
+    return sector_summary
 
 
 def fetch_yearly_total(query_extra: str, year: int) -> int:
