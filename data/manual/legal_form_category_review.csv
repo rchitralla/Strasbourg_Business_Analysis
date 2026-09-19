@@ -125,7 +125,7 @@ code,legal_form_label,remove_raw,exclude_from_business_counts,category
 7354,Syndicat mixte fermé,,False,Syndicat
 7355,Syndicat mixte ouvert,,False,Syndicat
 8420,Syndicat patronal,,False,Syndicat
-6318,Union de sociétés coopératives agricoles,,False,
+6318,Union de sociétés coopératives agricoles,,True,Union
 7379,(Autre) Établissement public administratif local,Y,True,
 7179,(Autre) Service déconcentré de l'État à compétence territoriale,Y,True,
 9210,Association non déclarée,,False,Association
@@ -167,3 +167,6 @@ code,legal_form_label,remove_raw,exclude_from_business_counts,category
 5543,SA coopérative de construction à conseil d'administration,,False,
 5646,SA de HLM à directoire,,False,
 7150,Service du ministère de la Défense,Y,True,
+5459,SARL union de sociétés coopératives,,True,Union
+5559,SA union de sociétés coopératives à conseil d'administration,,True,Union
+5659,SA union de sociétés coopératives à directoire,,True,Union

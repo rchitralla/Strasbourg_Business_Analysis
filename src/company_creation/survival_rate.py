@@ -41,6 +41,7 @@ Usage:
     sv3.set_api_key()
 
     df = surv.collect_all_departments(min_year=2018, max_year=2020)  # cheap pilot first
+    df = surv.filter_business_entities(df)  # drop VAT-only/public-body/cooperative-union rows
     summary = surv.build_summary(df)
 """
 
@@ -59,10 +60,23 @@ CEASED = "C"
 
 def extract_row(record: dict) -> dict | None:
     """
-    Pulls creation year + CURRENT administrative status from one raw
-    établissement record — records here are already siège-filtered and
-    enterprise-corrected by sv3.fetch_establishments()'s own query, so
-    this is one row per new enterprise, not per établissement.
+    Pulls creation year, CURRENT administrative status, and legal form
+    from one raw établissement record — records here are already
+    siège-filtered and enterprise-corrected by sv3.fetch_establishments()'s
+    own query, so this is one row per new enterprise, not per
+    établissement.
+
+    legal_form / legal_form_label / category / exclude_from_business_counts
+    reuse sirene_v3_client's own official INSEE nomenclature and manual
+    review (see sv3.LEGAL_FORM_LABELS / sv3.CATEGORY_BY_CODE /
+    sv3.EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE) rather than duplicating that
+    mapping here — this is the SAME lookup collect_all_departments() in
+    sirene_v3_client.py already uses for the company-creation axis, so a
+    legal form excluded there (VAT-only registrations, public bodies,
+    indivisions, professional orders, and — as of 2026-09-19 — the four
+    "union de sociétés coopératives" codes 5459/5559/5659/6318, which are
+    federations of EXISTING cooperatives, not new standalone companies)
+    is excluded here identically. See filter_business_entities() below.
     """
     unite_legale = record.get("uniteLegale") or {}
     date_creation = unite_legale.get("dateCreationUniteLegale")
@@ -73,10 +87,17 @@ def extract_row(record: dict) -> dict | None:
     except (ValueError, TypeError):
         return None
 
+    legal_form_code_raw = unite_legale.get("categorieJuridiqueUniteLegale")
+    legal_form = str(legal_form_code_raw) if legal_form_code_raw else "?"
+
     return {
         "year": year,
         "siren": record.get("siren"),
         "etat": unite_legale.get("etatAdministratifUniteLegale"),  # "A" active / "C" cessée
+        "legal_form": legal_form,
+        "legal_form_label": sv3.LEGAL_FORM_LABELS.get(legal_form),
+        "category": sv3.CATEGORY_BY_CODE.get(legal_form, ""),
+        "exclude_from_business_counts": sv3.EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE.get(legal_form, False),
     }
 
 
@@ -91,12 +112,44 @@ def build_dataframe(records: list[dict], region_name: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def filter_business_entities(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drops rows whose legal form isn't a genuine new-business creation in
+    the Data Room brief's sense — VAT-only registrations, public bodies,
+    indivisions, professional orders, cooperative unions, etc. Call this
+    BEFORE build_summary() if you want survival rates computed only over
+    real companies:
+
+        df = surv.collect_all_departments(min_year=2015, max_year=2021)
+        df = surv.filter_business_entities(df)
+        summary = surv.build_summary(df)
+
+    Safe to skip if you deliberately want every legal form Sirene
+    registers (e.g. to report the excluded count itself).
+    """
+    if df.empty or "exclude_from_business_counts" not in df.columns:
+        return df
+    excluded_count = int(df["exclude_from_business_counts"].sum())
+    if excluded_count:
+        print(f"Dropping {excluded_count} row(s) with a non-business legal form "
+              f"(VAT-only, public body, cooperative union, etc.) — "
+              f"{len(df) - excluded_count} remain.")
+    return df[~df["exclude_from_business_counts"]].reset_index(drop=True)
+
+
 def _department_cache_path(dept_code: str, min_year: int, max_year: int) -> str:
     # Year range in the cache key: a survival snapshot is only valid for
     # the exact window it was fetched over, and "as of today" means the
     # cache also goes stale over time in a way most other caches in this
     # project don't — re-fetch (resume=False) if it's been a while.
-    return f"data/processed/survival_dept_{dept_code}_{min_year}_{max_year}.csv"
+    #
+    # "_lf" suffix added 2026-09-19 when legal_form/category/
+    # exclude_from_business_counts columns were added — a cache file from
+    # before that change has neither column, and filter_business_entities()
+    # would silently no-op against it (missing column, not "nothing to
+    # exclude"). The suffix forces a clean re-fetch instead of a resumed
+    # load from an old-shaped CSV.
+    return f"data/processed/survival_dept_{dept_code}_{min_year}_{max_year}_lf.csv"
 
 
 def collect_all_departments(min_year: int = MIN_YEAR, max_year: int = MAX_YEAR, resume: bool = True) -> pd.DataFrame:
