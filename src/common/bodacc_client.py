@@ -278,6 +278,28 @@ def _get_with_retry(params: dict, timeout: int = 30):
     raise last_exc
 
 
+def _response_json(response):
+    """
+    Parses a response's JSON body from raw bytes, NOT via response.json().
+
+    CONFIRMED live (2026-09-19): response.json() relies on requests's
+    guessed encoding (response.encoding, falling back to
+    apparent_encoding when the server sends no explicit charset — which
+    this API doesn't, since bare "application/json" never needs one per
+    RFC 8259). That guess is a statistical heuristic and flips
+    inconsistently between UTF-8 and Latin-1 from one response to the
+    next — a live multi-department fetch showed the SAME nature string
+    ("Jugement d'ouverture d'une procédure de liquidation judiciaire")
+    correctly accented on some pages and mojibake-garbled
+    ("procÃ©dure") on others within the identical run, silently
+    fragmenting every accented value into two distinct strings.
+    json.loads() on raw bytes auto-detects UTF-8/16/32 per RFC 8259
+    instead of guessing, which is what this API actually sends —
+    reliable where requests's heuristic wasn't.
+    """
+    return json.loads(response.content)
+
+
 def debug_sample(where: str = "", n: int = 5) -> dict | None:
     """
     Fetch a SMALL sample and pretty-print the raw JSON response. Run
@@ -297,7 +319,7 @@ def debug_sample(where: str = "", n: int = 5) -> dict | None:
     if response.status_code != 200:
         print(response.text[:1500])
         return None
-    payload = response.json()
+    payload = _response_json(response)
     print(json.dumps(payload, indent=2, ensure_ascii=False)[:6000])
     return payload
 
@@ -315,7 +337,7 @@ def count_records(where: str) -> int | None:
     if response.status_code != 200:
         print(f"count_records failed: HTTP {response.status_code}: {response.text[:300]}")
         return None
-    return response.json().get("total_count")
+    return _response_json(response).get("total_count")
 
 
 def fetch_all(where: str, max_records: int = None) -> list[dict]:
@@ -339,7 +361,7 @@ def fetch_all(where: str, max_records: int = None) -> list[dict]:
                   f"{response.text[:300]}")
             break
 
-        payload = response.json()
+        payload = _response_json(response)
         batch = payload.get("results", [])
         if not batch:
             break
