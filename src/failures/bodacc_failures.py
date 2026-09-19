@@ -18,23 +18,73 @@ later conversion or plan. The Data Room brief's own caveat is explicit:
 "an insolvency = an OPENING JUDGMENT; conversions from reorganisation to
 liquidation and terminated plans are not counted again." So this module
 classifies jugement.nature (free text) into opening vs. conversion/other
-via NATURE_CLASSIFICATION below, and headline counts should use
-is_opening_judgment == True unless you deliberately want the broader
-"all proceeding-related notices" number.
+via NATURE_CLASSIFICATION below, and headline counts should filter to
+nature_classification == "opening" unless you deliberately want the
+broader "all proceeding-related notices" number.
 
-NATURE_CLASSIFICATION currently covers only the nature strings actually
-seen so far (one example: "Jugement de conversion en liquidation
-judiciaire" -> conversion). MORE VALUES WILL APPEAR once real volume is
-pulled — any unrecognized nature string is classified as None
-(unclassified) with a loud warning printed, never silently guessed, so
-this needs revisiting once real department-level data comes back. This
-is the same defensive-classification pattern used for the Sirene
-NAFRev1/legal-form corrections elsewhere in this project.
+CONFIRMED live (2026-09-19) against the real, full distribution across
+all 3 departments (93,622 total notices — see NATURE_CLASSIFICATION
+below for every value seen and how it's classified). Two things this
+run also surfaced:
+
+1. A DIFFERENT, MORE SERIOUS bug in src/common/bodacc_client.py: the
+   same accented string was appearing as TWO distinct values — once
+   correctly accented, once mojibake-garbled ("procÃ©dure" instead of
+   "procédure") — because response.json() trusted requests's guessed
+   encoding, which flips inconsistently between UTF-8 and Latin-1 when
+   the server sends no explicit charset. FIXED in bodacc_client.py
+   (parses response.content directly with json.loads() instead). Any
+   department JSON cached BEFORE that fix (check the file's mtime, or
+   just re-fetch with resume=False) has this corruption BAKED IN and
+   must be re-fetched — NATURE_CLASSIFICATION below uses only the
+   correctly-accented spelling, so a stale cache's garbled duplicates
+   will show up as unclassified, not as classification errors.
+
+2. "Jugement de clôture pour insuffisance d'actif" (closure, NOT a new
+   failure) is the single LARGEST category (29,475 of 93,622) — bigger
+   than the main opening category itself. This confirms the Data Room
+   brief's caveat was not academic: a raw, unfiltered notice count
+   would have been dominated by closures of cases opened years
+   earlier, not new failures.
+
+NATURE_CLASSIFICATION below covers every nature value confirmed in that
+real distribution, using standard French insolvency-procedure
+vocabulary (Code de commerce, Livre VI — sauvegarde / redressement
+judiciaire / liquidation judiciaire), grouped into:
+  "opening"           - a genuine NEW insolvency proceeding commencing
+                         (THE headline "failure" event)
+  "conversion"         - an already-open case escalating to a harsher
+                         procedure (NOT new — already counted at opening)
+  "closure"            - the case ending, for any reason (NOT new)
+  "plan"               - a recovery/repayment/sale plan adopted for an
+                         already-open case (NOT new)
+  "plan_failure"        - a previously-adopted plan collapsing (often
+                         into liquidation) — a genuine secondary signal,
+                         but tied to a case already counted at its
+                         original opening, so kept separate rather than
+                         folded into "opening"
+  "personal_sanction"   - a sanction on the DIRIGEANT personally (gérer
+                         interdiction, faillite personnelle) — not a
+                         judgment about the company's insolvency status
+  "administrative"      - a procedural filing/notice within an existing
+                         case (creditor-claims deposits, plan
+                         modifications, organe appointments) — not a
+                         judgment on status at all
+  "appeal"              - a Court of Appeal ruling, whose effect on the
+                         underlying case can't be determined from the
+                         label alone
+  None (unclassified)   - the generic BODACC catch-all labels
+                         ("Autre jugement prononçant", "Autre jugement
+                         et ordonnance") — confirmed to be a genuinely
+                         large share of real volume (17,000+ combined)
+                         but with no way to tell from the label alone
+                         what actually happened. Left unclassified
+                         deliberately — see build_dataframe()'s warning.
 
 There is NO NAF/sector code on a BODACC record (only a free-text
 "activite" description) — a sector breakdown requires cross-referencing
 extract_siren() against Sirene (src/company_creation/sirene_v3_client.py),
-which is NOT implemented in this module yet (see TODO).
+via enrich_with_sector() below.
 
 Usage:
     from src.failures import bodacc_failures as bf
@@ -50,16 +100,101 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.common import bodacc_client as bc
 from config.regions import FRENCH_DEPARTMENTS
 
-# Only the nature strings actually confirmed against a live response so
-# far. Extend this as new values surface — see the module docstring.
+# CONFIRMED live (2026-09-19) against the real distribution across all 3
+# departments (93,622 notices) — see the module docstring for the full
+# category explanation. Uses only the correctly-accented spelling; a
+# cache fetched before bodacc_client.py's encoding fix will show mojibake
+# duplicates of these as unclassified — re-fetch it, don't add garbled
+# duplicate keys here.
 NATURE_CLASSIFICATION = {
+    # --- OPENING: genuine new insolvency proceedings (THE headline
+    # "failure" event) ---
+    "Jugement d'ouverture de liquidation judiciaire": "opening",
+    "Jugement d'ouverture d'une procédure de redressement judiciaire": "opening",
+    "Jugement d'ouverture d'une procédure de sauvegarde": "opening",
+    "Jugement d'ouverture d'une procédure de traitement de sortie de crise": "opening",
+    "Autre jugement d'ouverture": "opening",  # label itself says "d'ouverture" (opening)
+
+    # --- CONVERSION: an already-open case escalating to a harsher
+    # procedure (NOT a new failure — the original opening already
+    # counted it) ---
     "Jugement de conversion en liquidation judiciaire": "conversion",
-    # Expected but NOT YET CONFIRMED against a real example — verify
-    # the exact wording before relying on these:
-    # "Jugement d'ouverture d'une procédure de redressement judiciaire": "opening",
-    # "Jugement d'ouverture d'une procédure de liquidation judiciaire": "opening",
-    # "Jugement arrêtant le plan de redressement": "plan",
-    # "Jugement de clôture pour insuffisance d'actif": "cloture",
+    "Jugement de conversion en liquidation judiciaire de la procédure de sauvegarde": "conversion",
+    "Jugement de conversion en liquidation judiciaire de la procédure de sauvegarde financière accélérée": "conversion",
+    "Jugement de conversion en redressement judiciaire de la procédure de sauvegarde": "conversion",
+    "Jugement d'extension d'une procédure de redressement judiciaire": "conversion",
+    "Jugement d'extension d'une procédure de sauvegarde": "conversion",
+    "Jugement d'extension de liquidation judiciaire": "conversion",
+
+    # --- CLOSURE: the case ending, for any reason (NOT a new failure —
+    # confirmed live to be the SINGLE LARGEST category, 29,475/93,622,
+    # since it includes closures of cases opened years earlier) ---
+    "Jugement de clôture pour insuffisance d'actif": "closure",
+    "Jugement de clôture pour insuffisance d'actif et autorisant la reprise des poursuites individuelles": "closure",
+    "Jugement de clôture pour extinction du passif": "closure",
+    "Jugement de clôture de la procédure de sauvegarde": "closure",
+    "Autre jugement de clôture": "closure",
+    "Jugement mettant fin à la procédure de redressement judiciaire": "closure",
+    "Jugement mettant fin à la procédure de sauvegarde": "closure",
+    "Jugement mettant fin à la procédure de sauvegarde financière accélérée": "closure",
+    "Jugement de reprise de la procédure de liquidation judiciaire": "closure",  # reopening a previously-closed case
+
+    # --- PLAN: a recovery/repayment/sale plan adopted for an
+    # already-open case (NOT a new failure) ---
+    "Jugement arrêtant le plan de redressement": "plan",
+    "Jugement de plan de redressement": "plan",
+    "Jugement arrêtant le plan de sauvegarde": "plan",
+    "Jugement arrêtant le plan de sauvegarde financière accélérée": "plan",
+    "Jugement arrêtant un plan de cession": "plan",
+    "Jugement de plan de traitement de sortie de crise": "plan",
+    "Jugement modifiant le plan de continuation": "plan",
+    "Jugement modifiant le plan de redressement": "plan",
+    "Jugement modifiant le plan de sauvegarde": "plan",
+
+    # --- PLAN_FAILURE: a previously-adopted plan collapsing, usually
+    # into liquidation — a genuine secondary failure signal, but tied to
+    # a case already counted at its original opening ---
+    "Jugement prononçant la résolution du plan de redressement": "plan_failure",
+    "Jugement prononçant la résolution du plan de redressement et la liquidation judiciaire": "plan_failure",
+    "Jugement prononçant la résolution du plan de cession et la liquidation judiciaire": "plan_failure",
+    "Jugement prononçant la résolution du plan de sauvegarde et la liquidation judiciaire": "plan_failure",
+    "Jugement prononçant la résolution du plan de sauvegarde et le redressement judiciaire": "plan_failure",
+    "Jugement prononçant la résolution du plan de sauvegarde financière accélérée et la liquidation judiciaire": "plan_failure",
+    "Jugement prononçant la résolution du plan de sauvegarde accélérée et la liquidation judiciaire": "plan_failure",
+    "Jugement prononçant la résolution du plan de traitement de sortie de crise et le redressement judiciaire": "plan_failure",
+
+    # --- PERSONAL_SANCTION: a sanction on the dirigeant personally, not
+    # a judgment about the COMPANY's insolvency status ---
+    "Jugement d'interdiction de gérer": "personal_sanction",
+    "Jugement d'interdiction de gérer Loi de 1985": "personal_sanction",
+    "Jugement de faillite personnelle": "personal_sanction",
+    "Jugement de faillite personnelle Loi de 1985": "personal_sanction",
+
+    # --- ADMINISTRATIVE: a procedural filing/notice within an existing
+    # case — not a judgment on the company's status at all ---
+    "Dépôt de l'état des créances": "administrative",
+    "Dépôt de l'état des créances Loi de 1985": "administrative",
+    "Dépôt de l'état des créances et du projet de répartition": "administrative",
+    "Dépôt de l'état de collocation": "administrative",
+    "Dépôt du projet de répartition": "administrative",
+    "Autre avis de dépôt": "administrative",
+    "Autres avis de dépôt": "administrative",
+    "Liste des créances nées après le jugement d'ouverture d'une procédure de liquidation judiciaire": "administrative",
+    "Liste des créances nées après le jugement d'ouverture d'une procédure de redressement judiciaire": "administrative",
+    "Jugement de désignation des organes de la procédure": "administrative",
+    "Jugement modifiant la date de cessation des paiements": "administrative",
+    "Jugement accordant un délai pour déposer la liste des créances": "administrative",
+
+    # --- APPEAL: Court of Appeal rulings — effect on the underlying
+    # case can't be determined from the label alone ---
+    "Arrêt de la cour d'appel infirmant une décision soumise à publicité": "appeal",
+    "Autre arrêt de la Cour d'Appel": "appeal",
+
+    # "Autre jugement prononçant" and "Autre jugement et ordonnance" are
+    # deliberately NOT mapped — confirmed live to be large, genuine BODACC
+    # catch-all labels (9,733 and 7,288 notices respectively) with no way
+    # to tell from the label alone what happened. Left unclassified
+    # (None) rather than guessed — see build_dataframe()'s warning.
 }
 
 
