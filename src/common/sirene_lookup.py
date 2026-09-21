@@ -68,6 +68,7 @@ def _extract_from_record(record: dict) -> dict:
         "legal_form_code": legal_form_code,
         "legal_form_label": sv3.LEGAL_FORM_LABELS.get(legal_form_code) if legal_form_code else None,
         "denomination": unite.get("denominationUniteLegale"),
+        "date_creation": unite.get("dateCreationUniteLegale"),  # full ISO date, NOT truncated to year
     }
 
 
@@ -111,6 +112,18 @@ def lookup_sirens_cached(sirens: list[str], cache_path: str = DEFAULT_CACHE_PATH
     interrupted run (Ctrl-C, kernel restart, network drop) doesn't lose
     completed work — just re-run with the same list and it picks up
     where it left off.
+
+    SCHEMA CHANGE (2026-09-21): _extract_from_record() now also returns
+    date_creation. A cache file populated BEFORE this change has entries
+    that simply lack that key — .get("date_creation") on those returns
+    None silently, NOT an error, so a pre-existing cache will look
+    "complete" while quietly missing creation dates for every SIREN
+    looked up before today. If you're computing lifespan-at-closure (see
+    bodacc_failures.compute_closure_lifespan()) and get suspiciously many
+    missing dates, delete data/manual/sirene_lookup_cache.json and
+    re-run — a full re-fetch is the only fix, there's no way to detect
+    "old cache entry" vs "genuinely no creation date on this record"
+    from the cached dict alone.
     """
     cache_file = Path(cache_path)
     cache = {}
@@ -148,6 +161,7 @@ def lookup_sirens_cached(sirens: list[str], cache_path: str = DEFAULT_CACHE_PATH
             "legal_form_code": result.get("legal_form_code"),
             "legal_form_label": result.get("legal_form_label"),
             "denomination": result.get("denomination"),
+            "date_creation": result.get("date_creation"),
         })
     return pd.DataFrame(rows)
 
