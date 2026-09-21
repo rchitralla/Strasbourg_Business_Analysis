@@ -206,6 +206,91 @@ def plot_yearly_trend(df: pd.DataFrame, output_path: str = "outputs/charts/bw_in
     save(fig, output_path)
 
 
+def plot_france_germany_comparison(
+    france_df: pd.DataFrame,
+    bw_csv_path: str = "data/processed/bw_insolvencies_by_year.csv",
+    output_path: str = "outputs/charts/fr_de_insolvency_comparison.png",
+) -> pd.DataFrame:
+    """
+    Indexed (starting year = 100) trend comparison: French BODACC
+    opening-judgment failures vs Baden-Württemberg business insolvencies
+    opened, both per year.
+
+    RAW COUNTS ARE NOT COMPARABLE DIRECTLY -- Baden-Württemberg's
+    population (~11.15M) dwarfs the three French departments combined
+    (~1.1M), so an un-indexed chart would just show "Germany has a
+    bigger number," not "did the two countries' failure trends move
+    differently." Indexing both series to their own first shared year
+    answers the actually interesting question -- same technique used by
+    sirene_v3_client.plot_department_share_of_national() for the
+    analogous department-vs-national scale mismatch earlier in this
+    project.
+
+    france_df: bodacc_failures.collect_all_departments()'s output (or
+    any subset -- pass all 3 departments together for the full
+    Alsace-Moselle comparison). Opening-classified notices only are
+    summed by year, matching this module's own default filter
+    (filter_to_opened=True) so both sides count the same KIND of event
+    (a genuine new failure, not a conversion/plan/closure).
+
+    bw_csv_path: this module's own tidy CSV (run_all() or
+    tidy_dataframe()+to_csv already produces it).
+
+    Only years present in BOTH series are compared -- Germany's table
+    has no 2025/2026 data yet, so those French years are dropped with a
+    printed note rather than silently misaligning the two series.
+    """
+    from src.common.plotting import PRIMARY_COLOR, SECONDARY_COLOR, new_figure, save
+
+    bw = pd.read_csv(bw_csv_path)
+    bw_yearly = bw.groupby("year")["count"].sum()
+
+    fr_opening = france_df[france_df["nature_classification"] == "opening"]
+    fr_yearly = fr_opening.groupby("year").size()
+
+    common_years = sorted(set(bw_yearly.index) & set(fr_yearly.index))
+    if not common_years:
+        raise ValueError("No overlapping years between the French and German series -- "
+                          "check both inputs cover a shared date range.")
+
+    dropped_fr = sorted(set(fr_yearly.index) - set(common_years))
+    dropped_de = sorted(set(bw_yearly.index) - set(common_years))
+    if dropped_fr or dropped_de:
+        print(f"NOTE: comparing only the overlapping window {common_years[0]}-{common_years[-1]}. "
+              f"Dropped from France (outside Germany's coverage): {dropped_fr}. "
+              f"Dropped from Germany: {dropped_de}.")
+
+    fr_series = fr_yearly.loc[common_years]
+    bw_series = bw_yearly.loc[common_years]
+    fr_indexed = fr_series / fr_series.iloc[0] * 100
+    bw_indexed = bw_series / bw_series.iloc[0] * 100
+
+    fig, ax = new_figure()
+    ax.plot(common_years, fr_indexed.values, marker="o", linewidth=2, color=PRIMARY_COLOR,
+            label="France (Bas-Rhin + Haut-Rhin + Moselle, opening judgments)")
+    ax.plot(common_years, bw_indexed.values, marker="o", linewidth=2, color=SECONDARY_COLOR,
+            label="Baden-Württemberg (proceedings opened)")
+    ax.axhline(100, color="#cccccc", linewidth=1, linestyle="--")
+    ax.set_title(f"Business Failure Trend, Indexed to {common_years[0]} = 100", fontsize=15, pad=12)
+    ax.set_xlabel("Year")
+    ax.set_ylabel(f"Index ({common_years[0]} = 100)")
+    ax.legend(loc="upper left", fontsize=9)
+    save(fig, output_path)
+
+    print(f"\nActual counts, {common_years[0]}: France = {fr_series.iloc[0]}, "
+          f"Baden-Württemberg = {bw_series.iloc[0]}")
+    print(f"Actual counts, {common_years[-1]}: France = {fr_series.iloc[-1]}, "
+          f"Baden-Württemberg = {bw_series.iloc[-1]}")
+
+    return pd.DataFrame({
+        "year": common_years,
+        "france_count": fr_series.values,
+        "france_index": fr_indexed.values,
+        "bw_count": bw_series.values,
+        "bw_index": bw_indexed.values,
+    })
+
+
 def run_all(table_code: str = TABLE_CODE, regional_key: str = REGIONAL_KEY,
             regionalvariable: str = REGIONALVARIABLE_LAND):
     """
