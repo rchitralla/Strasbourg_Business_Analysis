@@ -266,11 +266,42 @@ def plot_france_germany_comparison(
     bw_indexed = bw_series / bw_series.iloc[0] * 100
 
     fig, ax = new_figure()
+
+    # Shade the COVID-era insolvency-filing-suspension window directly on
+    # the chart -- the "why" behind the divergence shouldn't live only in
+    # speaker notes when it can be shown. 2020-2022 covers France's own
+    # trough (lowest point 2022) and the bulk of both countries' filing
+    # suspensions; drawn first (zorder=0) so the data lines sit on top of
+    # it, but the annotation TEXT waits until after the lines are plotted
+    # -- ax.get_ylim() on an empty axes returns matplotlib's default (0,1),
+    # not the real data range, so calling it before any data is plotted
+    # anchors the label near the bottom of the finished chart instead of
+    # near the top (confirmed live: exactly this bug on the first pass).
+    covid_years = [y for y in common_years if 2020 <= y <= 2022]
+    if covid_years:
+        ax.axvspan(min(covid_years) - 0.5, max(covid_years) + 0.5,
+                   color="#eeeeee", zorder=0)
+
     ax.plot(common_years, fr_indexed.values, marker="o", linewidth=2, color=PRIMARY_COLOR,
-            label="France (Bas-Rhin + Haut-Rhin + Moselle, opening judgments)")
+            label="France (Bas-Rhin + Haut-Rhin + Moselle, opening judgments)", zorder=3)
     ax.plot(common_years, bw_indexed.values, marker="o", linewidth=2, color=SECONDARY_COLOR,
-            label="Baden-Württemberg (proceedings opened)")
-    ax.axhline(100, color="#cccccc", linewidth=1, linestyle="--")
+            label="Baden-Württemberg (proceedings opened)", zorder=3)
+    ax.axhline(100, color="#cccccc", linewidth=1, linestyle="--", zorder=1)
+
+    if covid_years:
+        ax.text(sum(covid_years) / len(covid_years), ax.get_ylim()[1],
+                "COVID-era insolvency-filing\nsuspensions", ha="center", va="top",
+                fontsize=8, color="#888888", style="italic")
+
+    # Direct-label only the endpoints -- the number that matters for the
+    # headline ("131% vs 55%"), not a label on every point.
+    ax.annotate(f"{bw_indexed.iloc[-1]:.0f}%", (common_years[-1], bw_indexed.iloc[-1]),
+                textcoords="offset points", xytext=(8, 4), fontsize=10,
+                fontweight="bold", color=SECONDARY_COLOR)
+    ax.annotate(f"{fr_indexed.iloc[-1]:.0f}%", (common_years[-1], fr_indexed.iloc[-1]),
+                textcoords="offset points", xytext=(8, -12), fontsize=10,
+                fontweight="bold", color=PRIMARY_COLOR)
+
     ax.set_title(f"Business Failure Trend, Indexed to {common_years[0]} = 100", fontsize=15, pad=12)
     ax.set_xlabel("Year")
     ax.set_ylabel(f"Index ({common_years[0]} = 100)")
