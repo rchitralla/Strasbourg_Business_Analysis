@@ -188,3 +188,7 @@ fetch, tidy, cache, and chart.
   brief's own methodology, not a count of actual LBO transactions.
 - **Acquisition counts are a lower bound**: most share-transfer
   acquisitions carry no legal publication requirement in France.
+
+## Contact
+
+Email: rchitralla@chitrallaconsulting.com
