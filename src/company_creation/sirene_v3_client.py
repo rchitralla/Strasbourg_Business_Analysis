@@ -82,6 +82,31 @@ from src.common.sectors import NAF_WZ_SECTION_LABELS
 
 BASE_URL = "https://api.insee.fr/api-sirene/3.11"
 SEARCH_ENDPOINT = f"{BASE_URL}/siret"
+
+# CONFIRMED live (2026-09-14): a plain dateCreationEtablissement filter
+# counts every new ESTABLISHMENT, including new branches/sites opened by
+# ALREADY-EXISTING enterprises and head-office relocations of old
+# enterprises — a live national 2025 total of 2,063,714 came out ~77%
+# over the official INSEE "créations d'entreprises" figure (~1,166,000).
+# etablissementSiege:true alone only closes part of the gap (1,806,517 —
+# still ~55% over): a real sample record showed a siège établissement
+# with its own dateCreationEtablissement="2015-06-30", whose enterprise
+# (uniteLegale) had dateCreationUniteLegale="1970-01-01" (INSEE's
+# placeholder for an unknown/old founding date) and was already cessée
+# — an old, dead enterprise's headquarters move, miscounted as a 2015
+# "creation" under either filter.
+#
+# The fix: filter on the ENTERPRISE's own creation date
+# (dateCreationUniteLegale, NOT dateCreationEtablissement), combined
+# with etablissementSiege:true (so département-level geographic scoping
+# via codeCommuneEtablissement still works — unités légales alone have
+# no location field). Confirmed live: this brings the 2025 national
+# total to 1,232,143 — a 5.7% residual gap against the official
+# ~1,166,000, treated as ordinary definitional noise (the official
+# figure likely nets out reactivations/reprises slightly differently,
+# or is a provisional estimate) rather than a remaining bug.
+ENTERPRISE_ONLY_FILTER = "etablissementSiege:true"
+CREATION_DATE_FIELD = "dateCreationUniteLegale"  # the ENTERPRISE's date, not the établissement's
 PAGE_SIZE = 1000                 # max allowed by the API
 SECONDS_BETWEEN_REQUESTS = 2.1   # stays under the 30 req/min public-plan limit
 MAX_RETRIES = 5                  # for transient network errors (DNS blips, timeouts)
@@ -93,22 +118,44 @@ _API_KEY = None
 def _get_with_retry(url, params, headers, timeout):
     """
     Wraps requests.get() with retries for transient network errors
-    (DNS resolution blips, timeouts, connection resets) — a long
-    cursor-pagination run (potentially hundreds of requests over 15-30+
-    minutes) will otherwise die on a single momentary network hiccup
-    and lose everything fetched so far.
+    (DNS resolution blips, timeouts, connection resets) AND HTTP 429
+    (rate limited) responses.
+
+    CONFIRMED live (2026-09-14): a long Strasbourg fetch (SECONDS_
+    BETWEEN_REQUESTS already paces requests under the advertised 30
+    req/min limit) still died on a single HTTP 429 at 8,025/10,000
+    records, because this function previously only retried on request
+    EXCEPTIONS (ConnectionError/Timeout) — a 429 comes back as a
+    normal, non-exception HTTP response, so it fell straight through
+    to the caller and aborted the whole fetch. A long cursor-pagination
+    run (potentially hundreds/thousands of requests over many minutes)
+    needs to ride out an occasional rate-limit response, not die on it.
     """
     last_exc = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            return requests.get(url, params=params, headers=headers, timeout=timeout)
+            response = requests.get(url, params=params, headers=headers, timeout=timeout)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
             last_exc = e
             wait = RETRY_BACKOFF_SECONDS * attempt
             print(f"  Network error ({e.__class__.__name__}), retrying in {wait}s "
                   f"(attempt {attempt}/{MAX_RETRIES})...")
             time.sleep(wait)
-    raise last_exc
+            continue
+
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            wait = float(retry_after) if retry_after else RETRY_BACKOFF_SECONDS * attempt
+            print(f"  HTTP 429 (rate limited), retrying in {wait}s "
+                  f"(attempt {attempt}/{MAX_RETRIES})...")
+            time.sleep(wait)
+            continue
+
+        return response
+
+    raise last_exc if last_exc is not None else RuntimeError(
+        f"Exceeded {MAX_RETRIES} retries — still getting HTTP 429 (rate limited)."
+    )
 
 
 def set_api_key(key: str = None):
@@ -178,9 +225,18 @@ def debug_sample(departement_code: str, n: int = 5):
 
 def fetch_establishments(departement_code: str, min_year: int, max_year: int) -> tuple[list[dict], bool]:
     """
-    Fetch every "établissement" created in a department within
-    [min_year, max_year], walking the cursor until exhausted. No
-    10,000-result ceiling (unlike the recherche-entreprises wrapper).
+    Fetch every genuinely NEW ENTERPRISE (unité légale) whose head
+    office sits in a department within [min_year, max_year], walking
+    the cursor until exhausted. No 10,000-result ceiling (unlike the
+    recherche-entreprises wrapper).
+
+    Filters to etablissementSiege:true (the head-office établissement)
+    AND the ENTERPRISE's own creation date (CREATION_DATE_FIELD =
+    dateCreationUniteLegale), NOT the établissement's — see the module-
+    level comment above ENTERPRISE_ONLY_FILTER for why a plain
+    établissement-creation filter overcounts by ~55-77% (branch
+    openings and headquarters relocations of pre-existing enterprises
+    both get miscounted as "new companies" otherwise).
 
     Returns (records, complete). complete is False if the fetch had to
     give up early (network failure after retries, or a non-200
@@ -189,7 +245,8 @@ def fetch_establishments(departement_code: str, min_year: int, max_year: int) ->
     """
     query = (
         f"codeCommuneEtablissement:{departement_code}* "
-        f"AND dateCreationEtablissement:[{min_year}-01-01 TO {max_year}-12-31]"
+        f"AND {ENTERPRISE_ONLY_FILTER} "
+        f"AND {CREATION_DATE_FIELD}:[{min_year}-01-01 TO {max_year}-12-31]"
     )
 
     all_results = []
@@ -321,7 +378,21 @@ EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE, CATEGORY_BY_CODE = _load_category_review()
 def extract_row(record: dict) -> dict | None:
     """
     Pull creation year, sector, and legal form from one raw établissement
-    record.
+    record — every record here is already filtered to
+    etablissementSiege:true (see fetch_establishments()), so this is
+    effectively one row per new ENTERPRISE, not per établissement.
+
+    year comes from uniteLegale.dateCreationUniteLegale (the ENTERPRISE's
+    own creation date), NOT dateCreationEtablissement — matching the
+    query filter in fetch_establishments(). Using the établissement's own
+    date here (even though every record is already siège-filtered) would
+    reintroduce the exact headquarters-relocation miscount that filter
+    was fixed to exclude: a real sample record had
+    dateCreationEtablissement="2015-06-30" for a siège belonging to an
+    enterprise whose own dateCreationUniteLegale was "1970-01-01" (an
+    old, since-ceased enterprise) — reading the établissement's date
+    would have counted it as a 2015 creation regardless of the query
+    filter, purely due to how the year gets extracted here.
 
     legal_form is the raw numeric categorieJuridiqueUniteLegale code as a
     string. is_sole_shareholder is populated ONLY for the confirmed subset
@@ -332,15 +403,15 @@ def extract_row(record: dict) -> dict | None:
     intent is "sociétés" specifically, per how B16 vs B17 are phrased as
     separate questions in the Data Room brief.
     """
-    date_creation = record.get("dateCreationEtablissement")
+    unite_legale = record.get("uniteLegale") or {}
+
+    date_creation = unite_legale.get("dateCreationUniteLegale")
     if not date_creation:
         return None
     try:
         year = int(date_creation[:4])
     except (ValueError, TypeError):
         return None
-
-    unite_legale = record.get("uniteLegale") or {}
 
     # Confirmed against a live response (2026-08-30): the établissement-level
     # activitePrincipaleEtablissement field was not visible in our sample
@@ -410,13 +481,106 @@ def build_dataframe(records: list[dict], region_name: str) -> "pd.DataFrame":
     # groupby key above, since they're deterministic lookups.
     df["legal_form_label"] = df["legal_form"].map(LEGAL_FORM_LABELS)
     df["is_sole_shareholder"] = df["legal_form"].map(IS_SOLE_SHAREHOLDER_BY_CODE)
-    df["exclude_from_business_counts"] = df["legal_form"].map(EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE).fillna(False)
+    # .astype(bool) matters: for a legal_form code absent from
+    # EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE (most ordinary company forms
+    # are), .map() returns NaN, and a column mixing NaN with True/False
+    # comes out dtype=object even after .fillna(False) — Python bool is
+    # an int subclass, so `~` on an object-dtype column of True/False
+    # does integer bitwise-complement (~True == -2) instead of boolean
+    # negation, and pandas then misreads the result as column labels
+    # rather than a boolean mask. Confirmed live via build_clean_sector_
+    # dataset() below hitting exactly this on cached CSVs (2026-09-19).
+    df["exclude_from_business_counts"] = (
+        df["legal_form"].map(EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE).fillna(False).astype(bool)
+    )
     df["category"] = df["legal_form"].map(CATEGORY_BY_CODE).fillna("")
     return df.sort_values(["year", "region", "sector"]).reset_index(drop=True)
 
 
+def extract_siren_sector_row(record: dict) -> dict | None:
+    """
+    Pulls SIREN + creation year + sector for one raw établissement
+    record — a raw PER-COMPANY lookup, distinct from build_dataframe()'s
+    (year, region, sector, legal_form) -> count aggregation, which
+    discards the individual SIREN entirely (same reasoning survival_rate.py's
+    module docstring gives for why "etat" needs a separate fetch too).
+    Reuses extract_row() for the year/sector derivation — including the
+    same NAFRev2-only section-mapping rule and "Unknown / unclassified"
+    bucketing — so the two never drift apart, then adds the one field
+    extract_row() doesn't keep.
+    """
+    row = extract_row(record)
+    if row is None:
+        return None
+    return {
+        "siren": record.get("siren"),
+        "year": row["year"],
+        "sector": row["sector"],
+    }
+
+
+def _siren_sector_cache_path(dept_code: str, min_year: int, max_year: int) -> str:
+    return f"data/processed/siren_sector_dept_{dept_code}_{min_year}_{max_year}.csv"
+
+
+def collect_siren_sector_all_departments(min_year: int, max_year: int, resume: bool = True) -> "pd.DataFrame":
+    """
+    Fetch + tidy (siren, year, sector, region) for every French
+    department in config.regions.FRENCH_DEPARTMENTS — a raw per-company
+    lookup table you can filter/join by SIREN (e.g. to pull up specific
+    "Unknown / unclassified" records on the Sirene public lookup site).
+
+    NOT reusable from collect_all_departments()'s cached CSVs — those are
+    pre-aggregated to counts and never kept the SIREN, so this means a
+    FRESH crawl even for a year range you've already fetched for the
+    sector-summary axis. Pass a narrow min_year/max_year for a cheap
+    pilot first. Requires set_api_key().
+    """
+    import pandas as pd
+    from pathlib import Path
+    from config.regions import FRENCH_DEPARTMENTS
+
+    Path("data/processed").mkdir(parents=True, exist_ok=True)
+    frames = []
+    for dept in FRENCH_DEPARTMENTS.values():
+        csv_path = _siren_sector_cache_path(dept.insee_code, min_year, max_year)
+        if resume and Path(csv_path).exists():
+            print(f"\n{dept.name}: already fetched, loading from {csv_path} (pass resume=False to re-fetch).")
+            frames.append(pd.read_csv(csv_path))
+            continue
+
+        print(f"\nFetching SIREN/year/sector for {dept.name} (dept code {dept.insee_code}), "
+              f"{min_year}-{max_year}...")
+        records, complete = fetch_establishments(dept.insee_code, min_year=min_year, max_year=max_year)
+        print(f"  Total records retrieved: {len(records)} (complete: {complete})")
+
+        rows = []
+        for record in records:
+            row = extract_siren_sector_row(record)
+            if row is not None:
+                row["region"] = dept.name
+                rows.append(row)
+        dept_df = pd.DataFrame(rows)
+
+        if complete:
+            dept_df.to_csv(csv_path, index=False)
+            print(f"  Saved: {csv_path}")
+        else:
+            print("  NOT caching — this department's fetch was incomplete. Re-run to retry.")
+        frames.append(dept_df)
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def _department_csv_path(dept_code: str) -> str:
-    return f"data/processed/france_creations_sirene_v3_dept_{dept_code}.csv"
+    # "_enterprises" suffix (2026-09-14) deliberately changes the path
+    # from the pre-fix version — old CSVs at the un-suffixed path were
+    # built from a plain établissement-creation query (confirmed ~55-77%
+    # overcounted, see ENTERPRISE_ONLY_FILTER's module-level comment)
+    # and must not be silently reused by collect_all_departments()'s
+    # resume=True. The old files are left in place (not deleted) in case
+    # they're wanted for comparison.
+    return f"data/processed/france_creations_sirene_v3_dept_{dept_code}_enterprises.csv"
 
 
 def collect_all_departments(min_year: int, max_year: int, resume: bool = True) -> "pd.DataFrame":
@@ -467,6 +631,330 @@ def collect_all_departments(min_year: int, max_year: int, resume: bool = True) -
         frames.append(dept_df)
 
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def build_clean_sector_dataset(min_year: int = None, max_year: int = None) -> "pd.DataFrame":
+    """
+    Rebuilds a clean (year, region, sector) creation-count table for
+    Bas-Rhin/Haut-Rhin/Moselle from the already-fetched, cached
+    per-department CSVs (data/processed/france_creations_sirene_v3_dept_
+    <code>_enterprises.csv) — NO API calls, so safe to re-run any time
+    data/manual/legal_form_category_review.csv changes (as it just did:
+    the four "union de sociétés coopératives" codes, 2026-09-19).
+
+    "Clean" means:
+      1. legal_form_label / category / exclude_from_business_counts are
+         RECOMPUTED from the CURRENT LEGAL_FORM_LABELS / CATEGORY_BY_CODE /
+         EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE dicts, never trusted from the
+         cached CSV — those columns were baked in at fetch time and go
+         stale whenever the manual review file is edited afterwards. The
+         raw categorieJuridiqueUniteLegale code itself (the "legal_form"
+         column) doesn't change, so this needs no re-fetch — only a
+         re-derivation.
+      2. Rows with exclude_from_business_counts == True (VAT-only
+         registrations, public bodies, indivisions, professional orders,
+         cooperative unions, etc.) are dropped, with a printed breakdown
+         by category so nothing silently disappears.
+      3. legal_form/legal_form_label/is_sole_shareholder/category
+         granularity is then summed away — this dataset answers "how many
+         genuine new companies by sector", not by legal form (B17/B18's
+         question, handled separately in summarize_b16_b17_b18.py).
+
+    Requires collect_all_departments() to have already been run at least
+    once (reads its cached CSVs). Pass min_year/max_year to narrow the
+    window; omit both for everything cached.
+    """
+    import pandas as pd
+    from pathlib import Path as _Path
+    from config.regions import FRENCH_DEPARTMENTS
+
+    frames = []
+    for dept in FRENCH_DEPARTMENTS.values():
+        csv_path = _department_csv_path(dept.insee_code)
+        if not _Path(csv_path).exists():
+            print(f"WARNING: no cached CSV for {dept.name} at {csv_path} — "
+                  f"run collect_all_departments() first. Skipping this department.")
+            continue
+        dept_df = pd.read_csv(csv_path, dtype={"legal_form": str})
+        frames.append(dept_df)
+
+    if not frames:
+        print("No cached department data found — run collect_all_departments() first.")
+        return pd.DataFrame()
+
+    df = pd.concat(frames, ignore_index=True)
+
+    if min_year is not None:
+        df = df[df["year"] >= min_year]
+    if max_year is not None:
+        df = df[df["year"] <= max_year]
+
+    # Recompute — never trust the cached copies of these three columns.
+    # .astype(bool) matters here: see the identical comment in
+    # build_dataframe() above — without it this column can come back
+    # dtype=object and silently break the `~` negation below.
+    df["legal_form_label"] = df["legal_form"].map(LEGAL_FORM_LABELS)
+    df["category"] = df["legal_form"].map(CATEGORY_BY_CODE).fillna("")
+    df["exclude_from_business_counts"] = (
+        df["legal_form"].map(EXCLUDE_FROM_BUSINESS_COUNTS_BY_CODE).fillna(False).astype(bool)
+    )
+
+    excluded = df[df["exclude_from_business_counts"]]
+    if not excluded.empty:
+        dropped_total = int(excluded["count"].sum())
+        breakdown = excluded.groupby("category")["count"].sum().sort_values(ascending=False)
+        print(f"Dropping {dropped_total} record(s) with a non-business legal form:")
+        for category, n in breakdown.items():
+            print(f"  {category or '(uncategorized)'}: {n}")
+
+    clean = df[~df["exclude_from_business_counts"]]
+
+    unclassified = clean[clean["sector"].str.startswith("Unknown / unclassified")]
+    if not unclassified.empty:
+        print(f"\nNOTE: {int(unclassified['count'].sum())} record(s) still fall into an "
+              f"'Unknown / unclassified' sector bucket (old NAFRev1/NAF25 nomenclature, "
+              f"or a missing NAF code) — see fetch_establishments()'s own note on this "
+              f"before treating the sector breakdown as complete.")
+
+    sector_summary = (
+        clean.groupby(["year", "region", "sector"])["count"]
+        .sum()
+        .reset_index()
+        .sort_values(["year", "region", "sector"])
+        .reset_index(drop=True)
+    )
+
+    out_path = "data/processed/france_creations_by_sector_clean.csv"
+    _Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    sector_summary.to_csv(out_path, index=False)
+    print(f"\nClean sector dataset saved to: {out_path} ({len(sector_summary)} rows)")
+
+    return sector_summary
+
+
+def fetch_yearly_total(query_extra: str, year: int) -> int:
+    """
+    Returns header.total for one year's query WITHOUT paginating through
+    the underlying records (nombre=1) — much cheaper than
+    fetch_establishments() when only a COUNT is needed. This is what
+    makes a France-wide national total feasible at all: crawling every
+    établissement in the country the way collect_all_departments() does
+    per department would be enormous and isn't needed just for a
+    headline comparison number.
+
+    Always filters to ENTERPRISE creations (ENTERPRISE_ONLY_FILTER +
+    CREATION_DATE_FIELD), not raw établissement creations — see the
+    module-level comment above ENTERPRISE_ONLY_FILTER for why (confirmed
+    live: a plain établissement filter overcounted France's 2025 total
+    by ~77%). query_extra is ANDed in on top of that. Pass "" for no
+    additional filter (whole of France), or e.g.
+    "codeCommuneEtablissement:67*" to scope to one department — used by
+    verify_yearly_total_against_cache() below.
+    """
+    query = f"{ENTERPRISE_ONLY_FILTER} AND {CREATION_DATE_FIELD}:[{year}-01-01 TO {year}-12-31]"
+    if query_extra:
+        query = f"{query_extra} AND {query}"
+    params = {"q": query, "curseur": "*", "nombre": 1}
+    response = _get_with_retry(SEARCH_ENDPOINT, params, _headers(), timeout=30)
+    if response.status_code != 200:
+        raise RuntimeError(f"HTTP {response.status_code} for year {year}: {response.text[:500]}")
+    return response.json().get("header", {}).get("total")
+
+
+def verify_enterprise_filter_against_official(year: int = 2025, official_reference: int = 1_166_000):
+    """
+    Re-run any time to reconfirm the enterprise-only filter against the
+    official INSEE "créations d'entreprises" press figure — the best
+    available ground truth for this fix (there's no second independent
+    number to cross-check a France-wide total against otherwise).
+
+    CONFIRMED live (2026-09-14), France national, 2025:
+      Raw établissement count (no filter)                     = 2,063,714
+      etablissementSiege:true only                             = 1,806,517
+      etablissementSiege:true + dateCreationUniteLegale (this) = 1,232,143
+      Official INSEE reference                                 =~1,166,000
+    The final ~5.7% residual gap is treated as ordinary definitional
+    noise (the official figure likely nets out reactivations/reprises
+    slightly differently, or is a provisional estimate), not a
+    remaining bug — see ENTERPRISE_ONLY_FILTER's module-level comment
+    for the real sample record that proved why the first two filters
+    still overcounted.
+    """
+    total = fetch_yearly_total("", year)
+    diff_pct = abs(total - official_reference) / official_reference * 100
+    print(f"{year}: enterprise-filtered national total = {total}, "
+          f"official reference = {official_reference} -> {diff_pct:.1f}% difference")
+    return total
+
+
+def verify_yearly_total_against_cache(dept_code: str, year: int):
+    """
+    Checks the header.total MECHANISM only (that a nombre=1 request
+    reports the true match count, independent of page size) — separate
+    from, and unaffected by, the établissement-vs-enterprise definition
+    fix (both sides of this comparison now use the same enterprise-only
+    query). Confirmed OK to within ordinary database drift (~0.03%) the
+    first time this ran, before the definition fix; re-run after
+    re-fetching a department under the new _enterprises.csv cache to
+    reconfirm on the corrected numbers.
+
+    Cross-checks fetch_yearly_total() for one already-cached department
+    against the real row count in that department's cached CSV (built by
+    fetch_establishments(), which paginates through every actual
+    record — the ground truth). Run this once, for a department you've
+    already fetched via collect_all_departments(), BEFORE trusting
+    fetch_national_yearly_totals() — a France-wide total can't be
+    cross-checked any other way, so this department-level check is the
+    only verification available.
+    """
+    import pandas as pd
+    from config.regions import FRENCH_DEPARTMENTS
+
+    csv_path = _department_csv_path(dept_code)
+    if not Path(csv_path).exists():
+        print(f"No cached CSV at {csv_path} — fetch this department first via collect_all_departments().")
+        return
+
+    cached_df = pd.read_csv(csv_path)
+    cached_count = int(cached_df.loc[cached_df["year"] == year, "count"].sum())
+    header_total = fetch_yearly_total(f"codeCommuneEtablissement:{dept_code}*", year)
+
+    dept = next((d for d in FRENCH_DEPARTMENTS.values() if d.insee_code == dept_code), None)
+    dept_name = dept.name if dept else dept_code
+    status = "OK" if cached_count == header_total else "MISMATCH"
+    print(f"{dept_name} {year}: cached (paginated, ground-truth) count = {cached_count}, "
+          f"header.total (nombre=1) = {header_total} -> {status}")
+    if status == "MISMATCH":
+        print("  Do not trust fetch_national_yearly_totals() until this is resolved — "
+              "header.total may not mean what this module assumes.")
+
+
+def fetch_national_yearly_totals(min_year: int, max_year: int) -> "pd.DataFrame":
+    """
+    France-wide NEW ENTERPRISE (not raw établissement) totals per year,
+    via fetch_yearly_total() (header.total, not a full crawl) — see
+    ENTERPRISE_ONLY_FILTER's module-level comment for the definition
+    fix and verify_enterprise_filter_against_official() for its live
+    confirmation against the official INSEE figure. Run
+    verify_yearly_total_against_cache() first for the header.total
+    mechanism itself — see its docstring for why this can't be
+    self-verified any other way.
+
+    Returns a (year, region, count) DataFrame with region fixed to
+    "France (national)" — matching REGION_COLORS' key in
+    src/common/plotting.py, and the shape collect_all_departments()
+    produces, so the two concat() directly for a combined chart.
+    """
+    import pandas as pd
+
+    rows = []
+    for year in range(min_year, max_year + 1):
+        total = fetch_yearly_total("", year)
+        print(f"  {year}: {total}")
+        rows.append({"year": year, "region": "France (national)", "count": total})
+        time.sleep(SECONDS_BETWEEN_REQUESTS)
+    return pd.DataFrame(rows)
+
+
+def plot_department_share_of_national(
+    combined_df: "pd.DataFrame",
+    output_path: str = "outputs/charts/france_creations_dept_pct_of_national.png",
+) -> "pd.DataFrame":
+    """
+    The readable alternative to plotting raw counts together: each
+    department's creation count as a % of the France national total for
+    the same year. Confirmed live (2026-09-14) that raw counts differ
+    by ~2 orders of magnitude (Bas-Rhin ~26k vs. France ~1.9M in 2023),
+    which would make the department bars invisible next to the national
+    one on a shared axis — this is the fix.
+
+    combined_df: run_national()'s (year, region, count) output, or
+    anything with the same shape (must contain a "France (national)"
+    region).
+    """
+    from src.common.plotting import new_figure, save, REGION_COLORS
+
+    pivot = combined_df.pivot_table(index="year", columns="region", values="count", aggfunc="sum")
+    if "France (national)" not in pivot.columns:
+        raise KeyError("'France (national)' column not found in combined_df — run run_national() first.")
+
+    national = pivot["France (national)"]
+    dept_cols = [c for c in pivot.columns if c != "France (national)"]
+    pct = pivot[dept_cols].div(national, axis=0) * 100
+
+    fig, ax = new_figure()
+    colors = [REGION_COLORS.get(c, "#333333") for c in pct.columns]
+    pct.plot(kind="bar", ax=ax, color=colors, width=0.8)
+    ax.set_title("Each Department's New Establishments as % of France's National Total",
+                 fontsize=14, pad=12)
+    ax.set_xlabel("Year")
+    ax.set_ylabel("% of national total")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=9, title="Department")
+    save(fig, output_path)
+    return pct
+
+
+def run_national(min_year: int = 2015, max_year: int = 2026):
+    """
+    Fetch the France-wide yearly totals and combine them with the
+    already-fetched department-level data (reads collect_all_departments()'s
+    cached per-department CSVs — does NOT re-fetch departments) into one
+    (year, region, count) DataFrame, then chart Bas-Rhin/Haut-Rhin/
+    Moselle vs. France (national) together (both as raw counts and as
+    each department's % share of the national total — see
+    plot_department_share_of_national()'s docstring for why the % chart
+    is the one to actually present).
+
+    Run collect_all_departments() (or run_all()) first if you haven't
+    already, and verify_yearly_total_against_cache() before this, to
+    confirm header.total is trustworthy.
+    """
+    from datetime import date
+    from pathlib import Path as _Path
+    import pandas as pd
+    from config.regions import FRENCH_DEPARTMENTS
+    from src.common.plotting import grouped_region_bar
+
+    dept_frames = []
+    for dept in FRENCH_DEPARTMENTS.values():
+        csv_path = _department_csv_path(dept.insee_code)
+        if not _Path(csv_path).exists():
+            print(f"WARNING: no cached CSV for {dept.name} at {csv_path} — "
+                  f"run collect_all_departments() first. Skipping this department.")
+            continue
+        dept_df = pd.read_csv(csv_path)
+        yearly = dept_df.groupby("year")["count"].sum().reset_index()
+        yearly["region"] = dept.name
+        dept_frames.append(yearly[["year", "region", "count"]])
+
+    print(f"Fetching France-wide national totals, {min_year}-{max_year}...")
+    national_df = fetch_national_yearly_totals(min_year, max_year)
+
+    combined = pd.concat(dept_frames + [national_df], ignore_index=True)
+
+    current_year = date.today().year
+    if max_year >= current_year:
+        print(f"\nNOTE: {current_year} is not yet complete — its total is a partial-year "
+              f"figure, not comparable to a full year. Exclude it or caption it explicitly "
+              f"on any chart/slide that includes it.")
+
+    csv_path = "data/processed/france_creations_by_year_dept_vs_national.csv"
+    _Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(csv_path, index=False)
+    print(f"Tidy data saved to: {csv_path}")
+
+    grouped_region_bar(
+        combined, value_col="count",
+        title="New Establishment Creations: Bas-Rhin/Haut-Rhin/Moselle vs. France (national)",
+        ylabel="Number of new establishments",
+        output_path="outputs/charts/france_creations_dept_vs_national.png",
+    )
+    print("\nNOTE: that raw-count chart is dominated by the national bar (~2 orders "
+          "of magnitude larger) — see plot_department_share_of_national() for the "
+          "readable version, generated below.")
+    plot_department_share_of_national(combined)
+
+    return combined
 
 
 def run_all(min_year: int = 2015, max_year: int = 2026):

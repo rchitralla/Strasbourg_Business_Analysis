@@ -10,11 +10,14 @@ Confirmed dimensions on each <Series> element:
   - REF_AREA: region code, e.g. "R93" (PACA), "R94" (Corse), "FE" (France
     entière) — REGION-level, NOT department. There is no direct Bas-Rhin/
     Haut-Rhin/Moselle breakdown; use Grand Est as the proxy. INSEE's
-    official region code for Grand Est is "44", so the SDMX code is
-    expected to be "R44" — NOT YET CONFIRMED (the sample response that
-    informed this module happened not to include it). Run
-    find_region_codes() below and check for "Grand Est" before trusting
-    any Grand-Est-filtered chart.
+    official region code for Grand Est is CONFIRMED as 44 (seen as
+    region_code: 44 on a live BODACC record for a Haut-Rhin/Mulhouse
+    company — src/common/bodacc_client.py, 2026-09-04), so "R44" is a
+    high-confidence guess for this API's own REF_AREA format (matching
+    the "R93"/"R94" pattern above), but the exact SDMX string has still
+    not been seen directly in a response from THIS api.insee.fr/series/BDM
+    endpoint. Run find_region_codes() below and check for "Grand Est"
+    before trusting any Grand-Est-filtered chart.
   - ACTIVITE_CREAT_ENT: a COARSE custom sector grouping (values seen so
     far: ENS=all sectors, FZ, BE, G, H, I, JZ, KZ, LZ, MN, PQS) — NOT the
     fine NAF A-U sections used in src/common/sectors.py for the Sirene
